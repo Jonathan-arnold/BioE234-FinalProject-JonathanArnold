@@ -409,6 +409,7 @@ Five concrete filters are provided:
 | `shell_zero_filter` | Substrates already in shell 0 (baseline — existing behaviour). |
 | `shell_threshold_filter(k)` | Substrates at shell ≤ k. |
 | `inchi_normalized_filter(universal)` | Substrates whose InChI matches a universal metabolite after stripping the `/p` (proton) and `/q` (charge) layers. |
+| `rhea_atom_filter(carrier_map)` | Substrates identified as carriers (cofactors, electron donors, group donors) by the Rhea reaction chemistry pipeline. Falls back to `shell_zero_filter` for reactions not in the map. |
 | `compose(*filters)` | Intersection of any number of filters — a substrate must survive all of them. |
 
 `traceback()` accepts an optional `substrate_filter` argument; passing
@@ -506,15 +507,80 @@ stereo layer is worth stripping too, but with the caveat that it produces
 multi-match results (up to 5 chemicals per entry for SAM), which means the
 filter marks more substrates as background than the strict version would.
 
-### 3.5 Future work: Evodex / atom-mapping
+### 3.5 Experiment C — Rhea carrier-map filter
 
-The atom-mapping approach (§3.1 Approach C) is architecturally the most
-principled because it does not rely on a pre-curated cofactor list at all:
-any substrate whose atoms do not contribute to the product skeleton is
-suppressed automatically, regardless of whether it appeared in
-`ubiquitous_metabolites.txt`.
+`scripts/build_rhea_carrier_map.py` downloads two Rhea files from the ExPASy
+FTP (`rhea2ec.tsv` and `rhea-reaction-smiles.tsv`), matches MetaCyc reactions
+to Rhea reactions by EC number + substrate InChI Jaccard overlap (threshold
+≥ 0.3), then labels substrates as carriers using two rules:
 
-Retrofitting this into the codebase would require:
+1. **Small-molecule rule.** Substrates with ≤ 4 heavy atoms (H₂O, H⁺, O₂,
+   CO₂, Pᵢ, PPᵢ, …) are always carriers regardless of context.
+2. **Tanimoto-pairing rule.** A substrate whose Morgan fingerprint (radius 2,
+   2048 bits) has Tanimoto similarity ≥ 0.7 with *any* product of the same
+   reaction is a carrier — this catches cofactor cycling pairs (NAD⁺→NADH,
+   FAD→FADH₂, ATP→ADP) whose atoms are returned to the pool rather than
+   incorporated into the product skeleton.
+
+```bash
+uv run python scripts/build_rhea_carrier_map.py --data-dir data
+```
+
+Output: `data/rhea_carrier_map.tsv` — 7 933 MetaCyc reactions matched;
+6 026 of those (76%) have at least one carrier identified.
+
+`scripts/rhea_filter_experiment.py` then measures the impact on cascade sizes
+across a stratified sample of targets, comparing `rhea_atom_filter`,
+`inchi_normalized_filter`, and their composition against the shell-zero
+baseline.
+
+```bash
+uv run python scripts/rhea_filter_experiment.py --data-dir data --per-shell 8 --max-shell 10
+```
+
+Results on 72 targets (shells 2–10, `max_producers=10`):
+
+| Filter | Total cascade reactions | Reduction |
+|---|---|---|
+| `baseline` (`shell_zero`) | 247 378 | — |
+| `rhea_atom_filter` | 244 923 | −2 455 (1.0%) |
+| `inchi_normalized_filter` | 246 450 | −928 (0.4%) |
+| `rhea_atom_filter` + `inchi_normalized_filter` | 243 995 | −3 383 (1.4%) |
+
+Three findings worth calling out:
+
+1. **The two filters are fully complementary.** For every large cascade, Rhea
+   drops exactly 43 reactions and `inchi_norm` drops exactly 16, with zero
+   overlap (43 + 16 = 59 every time). They are finding categorically different
+   cofactors: `inchi_norm` catches molecules whose protonation or charge state
+   differs from the universal list, while Rhea catches molecules that weren't
+   in that list at all but are structurally paired with a product.
+
+2. **The modest absolute reduction is expected.** The Rhea map covers **40.6%
+   of all reactions visited** in a typical baseline cascade, so the filter has
+   plenty of opportunity to act. The 1% reduction is small because most major
+   cofactors (NAD⁺, FAD, CoA, ATP) are already in shell 0 via
+   `ubiquitous_metabolites.txt` and need no further filtering. The 43
+   reactions that Rhea prunes are the subset of cascades where a carrier has
+   shell > 0 — real cofactors the universal list missed.
+
+3. **Rhea contributes 2.7× more than InChI normalization** in this category.
+   Together they constitute a complementary defense: normalization corrects
+   data-source encoding drift; Rhea detects carriers the curated list never
+   enumerated.
+
+### 3.7 Future work: Evodex / true atom-mapping
+
+`rhea_atom_filter` approximates atom tracking with Tanimoto similarity rather
+than actually following atoms through the reaction. This works well for
+cofactor cycling pairs (high self-similarity) but can miss group-transfer
+carriers where the donor and acceptor forms are structurally dissimilar. The
+fully principled approach would use atom-mapped reaction SMARTS — available
+from [Evodex](https://github.com/hesther/evodex) — where the carrier
+classification is exact: any substrate atom that does not appear in the
+product skeleton is definitionally transferred.
+
+Upgrading from Rhea to Evodex would require:
 
 1. **Atom-mapped reaction data.** The current `Reaction` model carries only
    substrate/product sets and an EC number. Atom-mapping requires SMARTS
@@ -524,11 +590,11 @@ Retrofitting this into the codebase would require:
 2. **RDKit reaction processing.** Parsing a reaction SMARTS, applying it,
    and reading which input atoms ended up in which output atoms requires
    `rdkit.Chem.AllChem.ReactionFromSmarts` — already a dependency in
-   `bootstrap_ecoli_shell0.py`, so the package constraint is met, but the
-   parser and `Reaction` model would need extension.
+   `scripts/build_rhea_carrier_map.py`, so the package constraint is met,
+   but the parser and `Reaction` model would need extension.
 3. **A new `SubstrateFilter` implementation.** The filter infrastructure is
    already in place and the type signature is compatible. Once the atom-map
-   data is available, the Evodex filter slips in as one more callable without
+   data is available, an Evodex filter slips in as one more callable without
    touching `traceback()` or `pathways.py`.
 
 ---
