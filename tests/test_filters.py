@@ -7,6 +7,7 @@ import pytest
 from synthesis_helper.filters import (
     compose,
     inchi_normalized_filter,
+    rhea_atom_filter,
     shell_threshold_filter,
     shell_zero_filter,
 )
@@ -193,4 +194,96 @@ def test_compose_two_filters_cascade_is_subset(small_cell, small_cell_hg):
     default_cascade = traceback(small_cell_hg, c["T"])
     composed_filter = compose(shell_zero_filter, shell_threshold_filter(1))
     filtered_cascade = traceback(small_cell_hg, c["T"], substrate_filter=composed_filter)
+    assert filtered_cascade.reactions <= default_cascade.reactions
+
+
+# ---------------------------------------------------------------------------
+# rhea_atom_filter
+# ---------------------------------------------------------------------------
+
+def _make_rhea_hg() -> tuple[HyperGraph, dict, dict]:
+    """Build a 4-chemical, 2-reaction HyperGraph for Rhea filter testing.
+
+    Layout:
+        N  (shell 0, native)
+        CAR (shell 0, also in carrier map for R1 — simulates NAD+/FAD)
+        M2  (shell 1, skeleton product of R1)
+        T   (shell 2, produced by M2 alone in R2)
+
+    Reaction map:
+        R1 (id=101): {N, CAR} → {M2}   CAR is a carrier per rhea map
+        R2 (id=102): {M2}     → {T}    no entry in rhea map → fallback
+    """
+    N   = _chem(1, "N",   inchi="InChI=1S/N_formula")
+    CAR = _chem(2, "CAR", inchi="InChI=1S/CAR_formula")
+    M2  = _chem(3, "M2",  inchi="InChI=1S/M2_formula")
+    T   = _chem(4, "T",   inchi="InChI=1S/T_formula")
+
+    r1 = _rxn(101, subs=[N, CAR], prods=[M2])
+    r2 = _rxn(102, subs=[M2],     prods=[T])
+
+    hg = HyperGraph()
+    hg.chemical_to_shell[N]   = 0
+    hg.chemical_to_shell[CAR] = 0
+    hg.chemical_to_shell[M2]  = 1
+    hg.chemical_to_shell[T]   = 2
+    hg.reaction_to_shell[r1]  = 1
+    hg.reaction_to_shell[r2]  = 2
+
+    chems = {"N": N, "CAR": CAR, "M2": M2, "T": T}
+    rxns  = {"R1": r1, "R2": r2}
+    return hg, chems, rxns
+
+
+def test_rhea_atom_filter_drops_carrier():
+    """Substrates listed as carriers in the map must be excluded."""
+    hg, chems, rxns = _make_rhea_hg()
+    carrier_inchi = "InChI=1S/CAR_formula"
+    carrier_map = {101: frozenset([carrier_inchi])}
+    f = rhea_atom_filter(carrier_map)
+    result = f(rxns["R1"], hg)
+    assert chems["CAR"] not in result
+
+
+def test_rhea_atom_filter_keeps_skeleton():
+    """Non-carrier substrates not in shell 0 must survive the filter."""
+    hg, chems, rxns = _make_rhea_hg()
+    # CAR is shell-0 anyway; make N shell-1 so we can distinguish filter behaviour
+    hg.chemical_to_shell[chems["N"]] = 1
+    carrier_inchi = "InChI=1S/CAR_formula"
+    carrier_map = {101: frozenset([carrier_inchi])}
+    f = rhea_atom_filter(carrier_map)
+    result = f(rxns["R1"], hg)
+    assert chems["N"] in result
+
+
+def test_rhea_atom_filter_fallback_to_shell_zero():
+    """Reactions absent from the carrier map must fall back to shell_zero_filter."""
+    hg, chems, rxns = _make_rhea_hg()
+    # R2 (id=102) is not in the carrier map
+    carrier_map: dict[int, frozenset[str]] = {}
+    f = rhea_atom_filter(carrier_map)
+    result_rhea = f(rxns["R2"], hg)
+    result_sz   = shell_zero_filter(rxns["R2"], hg)
+    assert result_rhea == result_sz
+
+
+def test_rhea_atom_filter_cascade_subset(small_cell, small_cell_hg):
+    """End-to-end: cascade with rhea_atom_filter(empty map) equals default cascade
+    because the empty map causes full fallback to shell_zero_filter."""
+    c = small_cell.chems
+    default_cascade  = traceback(small_cell_hg, c["T"])
+    filtered_cascade = traceback(
+        small_cell_hg, c["T"],
+        substrate_filter=rhea_atom_filter({}),
+    )
+    assert filtered_cascade.reactions == default_cascade.reactions
+
+
+def test_rhea_atom_filter_composes_with_shell_zero(small_cell, small_cell_hg):
+    """compose(rhea_atom_filter, shell_zero_filter) cascade is subset of default."""
+    c = small_cell.chems
+    default_cascade  = traceback(small_cell_hg, c["T"])
+    composed = compose(rhea_atom_filter({}), shell_zero_filter)
+    filtered_cascade = traceback(small_cell_hg, c["T"], substrate_filter=composed)
     assert filtered_cascade.reactions <= default_cascade.reactions

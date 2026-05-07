@@ -95,6 +95,7 @@ class _State:
     fingerprint_build_ms: float = 0.0
     fingerprint_skipped: int = 0
     load_time_ms: float = 0.0
+    rhea_carrier_map: dict[int, frozenset[str]] | None = None
 
 
 _state = _State()
@@ -127,6 +128,7 @@ def reset() -> None:
         _state.fingerprint_build_ms = 0.0
         _state.fingerprint_skipped = 0
         _state.load_time_ms = 0.0
+        _state.rhea_carrier_map = None
 
 
 def _parse_ec_names(path: Path) -> dict[str, str]:
@@ -336,6 +338,56 @@ def get_ec_names() -> dict[str, str]:
             _bootstrap()
         assert _state.ec_names is not None
         return _state.ec_names
+
+
+def _parse_rhea_carrier_map(path: Path) -> dict[int, frozenset[str]]:
+    """Parse rhea_carrier_map.tsv → {rxn_id: frozenset of normalized InChI strings}."""
+    result: dict[int, frozenset[str]] = {}
+    if not path.exists():
+        return result
+    with path.open() as fh:
+        for line in fh:
+            line = line.rstrip("\n")
+            if not line or line.startswith("rxnid"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 2:
+                continue
+            try:
+                rxn_id = int(parts[0])
+            except ValueError:
+                continue
+            inchis = frozenset(i for i in parts[1].split(",") if i)
+            result[rxn_id] = inchis
+    return result
+
+
+def get_rhea_carrier_map() -> dict[int, frozenset[str]]:
+    """Lazy-loaded Rhea carrier map: reaction id → frozenset of carrier InChI strings.
+
+    Returns an empty dict if ``data/rhea_carrier_map.tsv`` has not been built yet
+    (run ``scripts/build_rhea_carrier_map.py`` to generate it). When the map is
+    absent, ``rhea_atom_filter`` falls back to ``shell_zero_filter`` per-reaction,
+    so the MCP server starts normally either way.
+    """
+    with _lock:
+        if _state.rhea_carrier_map is None:
+            path = _state.data_dir / "rhea_carrier_map.tsv"
+            _state.rhea_carrier_map = _parse_rhea_carrier_map(path)
+            if _state.rhea_carrier_map:
+                print(
+                    f"[synthesis_helper] Rhea carrier map loaded: "
+                    f"{len(_state.rhea_carrier_map)} reactions",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "[synthesis_helper] rhea_carrier_map.tsv not found — "
+                    "rhea_atom_filter will fall back to shell_zero_filter. "
+                    "Run scripts/build_rhea_carrier_map.py to generate it.",
+                    file=sys.stderr,
+                )
+        return _state.rhea_carrier_map
 
 
 def get_stats() -> dict[str, Any]:

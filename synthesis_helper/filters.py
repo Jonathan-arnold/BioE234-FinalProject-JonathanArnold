@@ -69,6 +69,36 @@ def inchi_normalized_filter(universal: set[Chemical]) -> SubstrateFilter:
     return _filter
 
 
+def rhea_atom_filter(carrier_map: dict[int, frozenset[str]]) -> SubstrateFilter:
+    """Drop substrates identified as carriers by the Rhea atom-tracking pipeline.
+
+    *carrier_map* maps reaction id → frozenset of normalized InChI strings
+    (proton/charge layers stripped) for substrates that are carriers in that
+    reaction. Build this map with ``scripts/build_rhea_carrier_map.py``.
+
+    For reactions not in the map, falls back to ``shell_zero_filter`` so the
+    filter degrades gracefully on unmatched reactions rather than suppressing
+    nothing or everything.
+    """
+    import re as _re
+
+    def _norm(inchi: str) -> str:
+        s = _re.sub(r"/p[+-]\d+", "", inchi.strip('"'))
+        return _re.sub(r"/q[+-]\d+", "", s)
+
+    def _filter(rxn: Reaction, hg: HyperGraph) -> frozenset[Chemical]:
+        carriers = carrier_map.get(rxn.id)
+        if carriers is None:
+            return shell_zero_filter(rxn, hg)
+        return frozenset(
+            s for s in rxn.substrates
+            if hg.chemical_to_shell.get(s) != 0
+            and _norm(s.inchi) not in carriers
+        )
+
+    return _filter
+
+
 def compose(*filters: SubstrateFilter) -> SubstrateFilter:
     """Intersect filters — a substrate must survive all of them to be recursed into."""
     if not filters:

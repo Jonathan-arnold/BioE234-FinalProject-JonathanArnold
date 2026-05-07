@@ -10,6 +10,7 @@ from synthesis_helper.filters import (
     shell_zero_filter,
     shell_threshold_filter,
     inchi_normalized_filter,
+    rhea_atom_filter,
     compose,
 )
 
@@ -27,5 +28,6 @@ __all__ = [
     "shell_zero_filter",
     "shell_threshold_filter",
     "inchi_normalized_filter",
+    "rhea_atom_filter",
     "compose",
 ]
