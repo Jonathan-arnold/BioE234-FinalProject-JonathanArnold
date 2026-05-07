@@ -166,7 +166,10 @@ def test_enumerate_pathways_handles_chemical_level_cycle():
     hg = synthesize(
         [r_ab, r_bc, r_cb], native_metabolites={a}, universal_metabolites=set(), verbose=False
     )
-    cascade = traceback(hg, c)
+    # shell_cutoff=1 admits the C->B back-edge so the cycle is fully captured;
+    # the default (-1) would prune r_cb since C sits at the same shell as the
+    # B it produces. The test target is enumerate_pathways termination.
+    cascade = traceback(hg, c, shell_cutoff=1)
 
     # Cascade should contain all three reactions; r_cb is pulled in because b is a
     # non-shell-0 substrate of r_bc and r_cb is a producer of b.

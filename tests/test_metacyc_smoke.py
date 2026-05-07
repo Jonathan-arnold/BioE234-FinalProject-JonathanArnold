@@ -97,7 +97,7 @@ def test_traceback_and_pathways_on_real_target(metacyc_hg):
     chems, hg = metacyc_hg
     target = chems[153337]  # kanamycin c
 
-    cascade = traceback(hg, target, max_producers_per_chemical=3)
+    cascade = traceback(hg, target, shell_cutoff=-1)
     assert cascade.target == target
     assert len(cascade.reactions) > 0
 

@@ -13,7 +13,7 @@ def test_cascade_for_T_contains_both_producers(small_cell, small_cell_hg):
     """
     c = small_cell.chems
     r = small_cell.rxns
-    cascade = traceback(small_cell_hg, c["T"])
+    cascade = traceback(small_cell_hg, c["T"], shell_cutoff=1)
 
     assert cascade.target == c["T"]
     expected = {r["R7"], r["R6"], r["R4"], r["R3"], r["R5"]}
@@ -27,7 +27,7 @@ def test_cascade_stops_at_shell_zero(small_cell, small_cell_hg):
     """Cascade(T) must NOT include R1, R2, R2b — they produce chemicals unrelated to T."""
     c = small_cell.chems
     r = small_cell.rxns
-    cascade = traceback(small_cell_hg, c["T"])
+    cascade = traceback(small_cell_hg, c["T"], shell_cutoff=1)
     for unrelated in ("R1", "R2", "R2b", "R8", "R9"):
         assert r[unrelated] not in cascade.reactions, (
             f"{unrelated} should not be in Cascade(T)"
@@ -52,39 +52,45 @@ def test_traceback_on_unreachable_raises(small_cell, small_cell_hg):
         traceback(small_cell_hg, c["M7"])
 
 
-def test_traceback_max_producers_keeps_shortest_route(small_cell, small_cell_hg):
-    """cap=1 on T must keep only R7 (shell 1, direct N2 -> T) and drop the longer
-       R6 branch (shell 3, via M5+M3a). The producers index sorts by
-       (reaction_shell, reaction_id), so shortest routes survive the cap.
+def test_traceback_shell_cutoff_minus_one_keeps_only_strictly_shorter_producers(
+    small_cell, small_cell_hg
+):
+    """T sits at shell 1. Its producers are R7 (sub N2, shell 0) and R6
+       (subs M5 shell 2, M3a shell 1). With shell_cutoff=-1 a substrate must
+       satisfy shell <= 1 + (-1) = 0, so only R7 qualifies; R6 is pruned
+       because M5 (and M3a) sit at or above T's own shell.
     """
     c = small_cell.chems
     r = small_cell.rxns
-    cascade = traceback(small_cell_hg, c["T"], max_producers_per_chemical=1)
+    cascade = traceback(small_cell_hg, c["T"], shell_cutoff=-1)
 
     assert cascade.reactions == {r["R7"]}, (
-        f"cap=1 should retain only the shortest producer R7; got "
+        f"shell_cutoff=-1 should retain only R7; got "
         f"{sorted(x.id for x in cascade.reactions)}"
     )
 
 
-def test_traceback_max_producers_none_matches_default(small_cell, small_cell_hg):
-    """cap=None is explicitly equivalent to the default (no cap). Guards against
-       accidental regressions where None is mis-treated as 0 or as truthy.
+def test_traceback_shell_cutoff_one_recovers_full_cascade(small_cell, small_cell_hg):
+    """shell_cutoff=1 lets a producer's substrates sit one shell above the
+       chemical itself, which admits R6 (max sub-shell 2, T's shell 1). The
+       resulting cascade matches the unrestricted ground truth.
     """
+    c = small_cell.chems
+    r = small_cell.rxns
+    cascade = traceback(small_cell_hg, c["T"], shell_cutoff=1)
+    assert cascade.reactions == {r["R7"], r["R6"], r["R4"], r["R3"], r["R5"]}
+
+
+def test_traceback_default_is_minus_one(small_cell, small_cell_hg):
+    """The default shell_cutoff is the tightest prune (-1)."""
     c = small_cell.chems
     default_cascade = traceback(small_cell_hg, c["T"])
-    explicit_none = traceback(small_cell_hg, c["T"], max_producers_per_chemical=None)
-    assert default_cascade.reactions == explicit_none.reactions
+    explicit = traceback(small_cell_hg, c["T"], shell_cutoff=-1)
+    assert default_cascade.reactions == explicit.reactions
 
 
-def test_traceback_max_producers_cap_large_enough_is_full_cascade(
-    small_cell, small_cell_hg
-):
-    """Cap >= max fan-in (T has 2 producers, every other chemical has <=1) must be
-       indistinguishable from uncapped. Confirms the cap is an upper bound, not a
-       hard truncation.
-    """
+def test_traceback_shell_cutoff_below_minus_one_raises(small_cell, small_cell_hg):
+    """shell_cutoff must be >= -1; -2 is invalid."""
     c = small_cell.chems
-    full = traceback(small_cell_hg, c["T"])
-    capped = traceback(small_cell_hg, c["T"], max_producers_per_chemical=10)
-    assert full.reactions == capped.reactions
+    with pytest.raises(ValueError):
+        traceback(small_cell_hg, c["T"], shell_cutoff=-2)

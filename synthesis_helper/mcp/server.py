@@ -142,7 +142,7 @@ def list_reachables(
 @mcp.tool()
 def get_cascade(
     chemical_ref: str | int,
-    max_producers_per_chemical: int = 5,
+    shell_cutoff: int = -1,
 ) -> dict[str, Any]:
     """Build the full cascade (all reactions reaching a target) from the baseline hypergraph.
 
@@ -151,8 +151,11 @@ def get_cascade(
     reaction list, all metabolites touched, and the subset of leaf (shell-0)
     metabolites.
 
-    *max_producers_per_chemical* caps branching when a non-native chemical has
-    many producers (shortest-shell producers kept first).
+    *shell_cutoff* (n >= -1) controls which producing reactions enter the
+    cascade: a reaction is admitted only if all its substrates lie in
+    shell <= (chemical's shell + n). n=-1 (default) is the tightest prune
+    and keeps only producers whose substrates are strictly closer to
+    shell 0 than the chemical itself; raise n to admit more branches.
     """
     hg = state.get_hypergraph()
     chem = _resolve_or_raise(chemical_ref)
@@ -160,7 +163,7 @@ def get_cascade(
         raise ValueError(
             f"{chem.name!r} (id={chem.id}) is not reachable from the baseline cell."
         )
-    cascade = build_cascade(hg, chem, max_producers_per_chemical=max_producers_per_chemical)
+    cascade = build_cascade(hg, chem, shell_cutoff=shell_cutoff)
     return cascade_to_dto(cascade, hg)
 
 
@@ -168,7 +171,7 @@ def get_cascade(
 def enumerate_pathways_for(
     chemical_ref: str | int,
     max_pathways: int = 10,
-    max_producers_per_chemical: int = 5,
+    shell_cutoff: int = -1,
 ) -> list[dict[str, Any]]:
     """Return up to *max_pathways* individual routes from native metabolites to target.
 
@@ -182,7 +185,7 @@ def enumerate_pathways_for(
         raise ValueError(
             f"{chem.name!r} (id={chem.id}) is not reachable from the baseline cell."
         )
-    cascade = build_cascade(hg, chem, max_producers_per_chemical=max_producers_per_chemical)
+    cascade = build_cascade(hg, chem, shell_cutoff=shell_cutoff)
     pathways = enumerate_pathways(cascade, hg, max_pathways=capped)
     return [pathway_to_dto(p, i, hg) for i, p in enumerate(pathways)]
 
@@ -191,7 +194,7 @@ def enumerate_pathways_for(
 def describe_pathway(
     chemical_ref: str | int,
     pathway_index: int,
-    max_producers_per_chemical: int = 5,
+    shell_cutoff: int = -1,
 ) -> str:
     """Render a human-readable Markdown trace of a single pathway.
 
@@ -200,7 +203,7 @@ def describe_pathway(
     hg = state.get_hypergraph()
     chems = state.get_chemicals()
     chem = _resolve_or_raise(chemical_ref)
-    cascade = build_cascade(hg, chem, max_producers_per_chemical=max_producers_per_chemical)
+    cascade = build_cascade(hg, chem, shell_cutoff=shell_cutoff)
     pathways = enumerate_pathways(cascade, hg, max_pathways=pathway_index + 1)
     if pathway_index >= len(pathways):
         raise ValueError(
@@ -231,7 +234,7 @@ def describe_pathway(
 def pathway_to_composition(
     chemical_ref: str | int,
     pathway_index: int = 0,
-    max_producers_per_chemical: int = 5,
+    shell_cutoff: int = -1,
 ) -> dict[str, Any]:
     """**Machine-readable enzyme list for ONE pathway, with engineering flags.**
     Call this whenever the user asks for the enzyme list, composition, "which
@@ -264,7 +267,7 @@ def pathway_to_composition(
         raise ValueError(
             f"{chem.name!r} (id={chem.id}) is not reachable from the baseline cell."
         )
-    cascade = build_cascade(hg, chem, max_producers_per_chemical=max_producers_per_chemical)
+    cascade = build_cascade(hg, chem, shell_cutoff=shell_cutoff)
     pathways = enumerate_pathways(cascade, hg, max_pathways=pathway_index + 1)
     if pathway_index >= len(pathways):
         raise ValueError(
@@ -284,7 +287,7 @@ def pathway_to_composition(
 def compare_pathways(
     chemical_ref: str | int,
     n: int = 5,
-    max_producers_per_chemical: int = 5,
+    shell_cutoff: int = -1,
 ) -> dict[str, Any]:
     """**Multi-dimensional scorecard across up to N pathways to one target.**
     Call this whenever the user asks to compare, rank, triage, or pick between
@@ -331,7 +334,7 @@ def compare_pathways(
             f"{chem.name!r} (id={chem.id}) is not reachable from the baseline cell."
         )
     cap = max(1, min(n, _MAX_PATHWAYS_CAP))
-    cascade = build_cascade(hg, chem, max_producers_per_chemical=max_producers_per_chemical)
+    cascade = build_cascade(hg, chem, shell_cutoff=shell_cutoff)
     pathways = enumerate_pathways(cascade, hg, max_pathways=cap)
 
     ec_names = state.get_ec_names()
@@ -508,7 +511,7 @@ def _viewer_result(
 def open_pathway_interactive(
     chemical_ref: str | int,
     pathway_index: int = 0,
-    max_producers_per_chemical: int = 5,
+    shell_cutoff: int = -1,
 ) -> dict[str, Any]:
     """**THE visualization tool for a single pathway.** Call this whenever the
     user asks to see, draw, view, graph, diagram, or visualize one pathway to
@@ -548,7 +551,7 @@ def open_pathway_interactive(
         raise ValueError(
             f"{chem.name!r} (id={chem.id}) is not reachable from the baseline cell."
         )
-    cascade = build_cascade(hg, chem, max_producers_per_chemical=max_producers_per_chemical)
+    cascade = build_cascade(hg, chem, shell_cutoff=shell_cutoff)
     pathways = enumerate_pathways(cascade, hg, max_pathways=pathway_index + 1)
     if pathway_index >= len(pathways):
         raise ValueError(
@@ -585,7 +588,7 @@ def open_pathway_interactive(
 @mcp.tool()
 def open_cascade_interactive(
     chemical_ref: str | int,
-    max_producers_per_chemical: int = 5,
+    shell_cutoff: int = -1,
     max_reactions: int = 200,
 ) -> dict[str, Any]:
     """**THE visualization tool for a full cascade / producer tree.** Call this
@@ -610,7 +613,7 @@ def open_cascade_interactive(
     group-by themes are {shell, ec_class, role, producer_depth}.
 
     Large cascades can be unwieldy — if the target has many producer
-    reactions, lower ``max_producers_per_chemical`` first. ``max_reactions``
+    reactions, lower ``shell_cutoff`` (toward -1) first. ``max_reactions``
     is a safety ceiling (default 200); the call raises if the cascade
     exceeds it so the browser doesn't choke on a thousand-node graph.
 
@@ -623,7 +626,7 @@ def open_cascade_interactive(
         raise ValueError(
             f"{chem.name!r} (id={chem.id}) is not reachable from the baseline cell."
         )
-    cascade = build_cascade(hg, chem, max_producers_per_chemical=max_producers_per_chemical)
+    cascade = build_cascade(hg, chem, shell_cutoff=shell_cutoff)
     chem_id_to_name = {
         c.id: (c.name if c.name and c.name != "undefined" else f"#{c.id}")
         for c in state.get_chemicals().values()

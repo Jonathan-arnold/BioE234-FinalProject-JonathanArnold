@@ -43,7 +43,7 @@ def _group_nodes(payload: dict) -> list[dict]:
 @pytest.fixture
 def target_and_pathways(small_cell: SmallCell, small_cell_hg: HyperGraph):
     T = small_cell.chems["T"]
-    cascade = build_cascade(small_cell_hg, T)
+    cascade = build_cascade(small_cell_hg, T, shell_cutoff=1)
     pathways = enumerate_pathways(cascade, small_cell_hg, max_pathways=10)
     assert pathways, "small_cell fixture should produce at least one pathway to T"
     return T, cascade, pathways

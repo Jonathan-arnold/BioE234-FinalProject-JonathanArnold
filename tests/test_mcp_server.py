@@ -95,7 +95,9 @@ def test_list_reachables_name_filter():
 
 
 def test_get_cascade_for_target():
-    cascade = get_cascade("T")
+    # shell_cutoff=1 admits R6's longer route (subs span shells 1-2 above T's
+    # own shell-1); the default (-1) prunes it and would leave only R7.
+    cascade = get_cascade("T", shell_cutoff=1)
     assert cascade["target"]["name"] == "T"
     # Every leaf must be shell 0
     assert all(leaf["shell"] == 0 for leaf in cascade["leaf_metabolites"])
@@ -268,7 +270,7 @@ def test_pathway_to_composition_flags_p450_and_orphan_consistently():
     # Walk every pathway and confirm the per-step invariants hold.
     for i in range(3):
         try:
-            out = pathway_to_composition("T", pathway_index=i)
+            out = pathway_to_composition("T", pathway_index=i, shell_cutoff=1)
         except ValueError:
             break
         for e in out["enzymes"]:
@@ -340,7 +342,7 @@ def test_compare_pathways_sort_order():
 def test_compare_pathways_flags_p450_pathway():
     # At least one of the T pathways includes R6 (EC 1.14.13.1). Find it
     # and assert the P450 + heme + orphan flags propagate up to the scorecard.
-    out = compare_pathways("T", n=5)
+    out = compare_pathways("T", n=5, shell_cutoff=1)
     has_p450_row = any(r["n_p450"] >= 1 for r in out["comparison"])
     assert has_p450_row, "expected at least one T pathway to hit R6 (EC 1.14.)"
     # n_heme must be >= n_p450 per-row (heme is a strict superset).

@@ -27,7 +27,7 @@ def test_pathways_finds_route_B(small_cell, small_cell_hg):
     c = small_cell.chems
     r = small_cell.rxns
 
-    cascade = traceback(small_cell_hg, c["T"])
+    cascade = traceback(small_cell_hg, c["T"], shell_cutoff=1)
     pathways = enumerate_pathways(cascade, small_cell_hg)
 
     reaction_sets = _pathway_reaction_sets(pathways)
@@ -45,7 +45,7 @@ def test_pathways_enumerates_both_complete_routes(small_cell, small_cell_hg):
     c = small_cell.chems
     r = small_cell.rxns
 
-    cascade = traceback(small_cell_hg, c["T"])
+    cascade = traceback(small_cell_hg, c["T"], shell_cutoff=1)
     pathways = enumerate_pathways(cascade, small_cell_hg)
 
     reaction_sets = _pathway_reaction_sets(pathways)

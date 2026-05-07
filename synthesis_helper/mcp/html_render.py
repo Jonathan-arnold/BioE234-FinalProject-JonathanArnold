@@ -1287,7 +1287,7 @@ def render_cascade_html(
     if n > max_reactions:
         raise ValueError(
             f"Cascade has {n} reactions, exceeds max_reactions={max_reactions}. "
-            "Lower max_producers_per_chemical, or raise max_reactions."
+            "Lower shell_cutoff (toward -1), or raise max_reactions."
         )
     chem_themes, rxn_themes, group_specs = _compute_themes_for_cascade(cascade, hg)
     all_chems: set[Chemical] = {cascade.target}
