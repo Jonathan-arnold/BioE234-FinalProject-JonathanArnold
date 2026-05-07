@@ -349,7 +349,7 @@ purpose).
 ---
 
 ## 3. Cofactor suppression in cascades
-*Author: [Your Name]*
+*Author: Cael Magner*
 
 Cascades returned by `traceback()` include every reaction transitively
 required to produce the target. That is correct for the algorithm, but
