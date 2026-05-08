@@ -30,7 +30,7 @@ from synthesis_helper.traceback import traceback
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data"
 RESULTS_DIR = REPO_ROOT / "eval_results"
-SEED = 20260508
+SEED = 20260509
 TOTAL_SAMPLES = 5
 CAP_SWEEP: tuple[int, ...] = (5, 10, 15)
 
@@ -220,21 +220,32 @@ def main() -> None:
     ap.add_argument(
         "--max-cutoff",
         type=int,
-        default=2,
-        help="Sweep shell_cutoff from -1 up to this value (inclusive).",
+        default=None,
+        help=(
+            "If given, sweep shell_cutoff from -1 up to this value (inclusive). "
+            "If omitted, run a single point with no shell cutoff."
+        ),
     )
     args = ap.parse_args()
 
-    if args.max_cutoff < -1:
+    if args.max_cutoff is not None and args.max_cutoff < -1:
         ap.error("--max-cutoff must be >= -1")
 
     RESULTS_DIR.mkdir(exist_ok=True)
-    cutoffs = list(range(-1, args.max_cutoff + 1))
     caps = list(CAP_SWEEP)
-    print(f"Sweeping shell_cutoff over: {cutoffs}")
-    print(f"Sweeping max_producers_per_chemical over: {caps}")
 
     hg, _ = build_hypergraph()
+
+    if args.max_cutoff is None:
+        max_shell = max(hg.chemical_to_shell.values(), default=0)
+        cutoffs: list[int] = [max_shell]
+        cutoff_labels = {max_shell: "none"}
+        print("No --max-cutoff given; running with no shell cutoff only.")
+    else:
+        cutoffs = list(range(-1, args.max_cutoff + 1))
+        cutoff_labels = {n: str(n) for n in cutoffs}
+        print(f"Sweeping shell_cutoff over: {cutoffs}")
+    print(f"Sweeping max_producers_per_chemical over: {caps}")
 
     sampled = sample_targets_per_shell(hg)
     print("\nSampled targets per shell:")
@@ -259,9 +270,10 @@ def main() -> None:
     inspection_lines: list[str] = []
 
     for n in cutoffs:
-        results["sweep"][str(n)] = {}
+        label = cutoff_labels[n]
+        results["sweep"][label] = {}
         for cap in caps:
-            print(f"\n=== shell_cutoff = {n}, max_producers = {cap} ===")
+            print(f"\n=== shell_cutoff = {label}, max_producers = {cap} ===")
             per_shell: dict[int, list[dict]] = {}
             for shell, chems in sorted(sampled.items()):
                 target_results = []
@@ -276,7 +288,7 @@ def main() -> None:
                     )
                 per_shell[shell] = target_results
 
-            results["sweep"][str(n)][str(cap)] = {
+            results["sweep"][label][str(cap)] = {
                 "per_shell": {
                     str(shell): {
                         "targets": tr,
