@@ -1,10 +1,8 @@
 """Evaluate the shell-cutoff + max-producers combo across a 2-D sweep.
 
 Builds the hypergraph once, samples reachables per shell (seeded), then for
-each (shell_cutoff, max_producers_per_chemical) combination runs traceback +
-enumerate_pathways on every sampled target and records per-shell metrics.
-Also renders one shell-1 and one shell-2 target's cascade as a nested dict
-for manual inspection at each combo.
+each (shell_cutoff, max_producers_per_chemical) combination runs traceback
+on every sampled target and records cascade-shape metrics per shell.
 
 Usage:
     python scripts/evaluate.py --max-cutoff 2
@@ -20,23 +18,21 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from synthesis_helper.composition import pathway_to_composition  # noqa: F401
-from synthesis_helper.models import Cascade, Chemical, HyperGraph, Pathway, Reaction
+from synthesis_helper.models import Cascade, Chemical, HyperGraph, Reaction
 from synthesis_helper.parser import (
     parse_chemicals,
     parse_metabolite_list,
     parse_reactions,
 )
-from synthesis_helper.pathways import enumerate_pathways
 from synthesis_helper.synthesize import synthesize
 from synthesis_helper.traceback import traceback
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data"
 RESULTS_DIR = REPO_ROOT / "eval_results"
-SEED = 20260507
-SAMPLES_PER_SHELL = 1
-MAX_PATHWAYS = 100_000
+SEED = 20260508
+TOTAL_SAMPLES = 5
+CAP_SWEEP: tuple[int, ...] = (5, 10, 15)
 
 
 def build_hypergraph() -> tuple[HyperGraph, dict[int, Chemical]]:
@@ -53,58 +49,56 @@ def build_hypergraph() -> tuple[HyperGraph, dict[int, Chemical]]:
 
 
 def sample_targets_per_shell(hg: HyperGraph) -> dict[int, list[Chemical]]:
-    """Group reachables by shell (excluding shell 0), sample 5 per shell."""
-    by_shell: dict[int, list[Chemical]] = defaultdict(list)
-    for chem, shell in hg.chemical_to_shell.items():
-        if shell > 0:
-            by_shell[shell].append(chem)
+    """Sample TOTAL_SAMPLES reachables uniformly from all non-shell-0 chemicals.
 
-    rng = random.Random(SEED)
-    sampled: dict[int, list[Chemical]] = {}
-    for shell in sorted(by_shell):
-        pool = sorted(by_shell[shell], key=lambda c: c.id)  # determinism
-        k = min(SAMPLES_PER_SHELL, len(pool))
-        sampled[shell] = rng.sample(pool, k)
-    return sampled
-
-
-def pathway_depth(pathway: Pathway, hg: HyperGraph) -> int:
-    """Longest chain from a shell-0 leaf to the target through this pathway.
-
-    `len(pathway.reactions)` counts every node in the pathway DAG (each
-    branch of a multi-substrate reaction adds nodes), so it overstates
-    "steps." Depth is what most people mean by pathway length.
+    Returned grouped by shell so downstream per-shell reporting still works.
     """
-    producers_in_pathway: dict[int, list[Reaction]] = {}
-    for rxn in pathway.reactions:
-        for prod in rxn.products:
-            producers_in_pathway.setdefault(prod.id, []).append(rxn)
+    pool = sorted(
+        (c for c, s in hg.chemical_to_shell.items() if s > 0),
+        key=lambda c: c.id,
+    )
+    rng = random.Random(SEED)
+    k = min(TOTAL_SAMPLES, len(pool))
+    chosen = rng.sample(pool, k)
 
-    rxn_depth: dict[int, int] = {}
+    sampled: dict[int, list[Chemical]] = defaultdict(list)
+    for c in chosen:
+        sampled[hg.chemical_to_shell[c]].append(c)
+    return dict(sorted(sampled.items()))
 
-    def depth_of_rxn(rxn: Reaction) -> int:
-        if rxn.id in rxn_depth:
-            return rxn_depth[rxn.id]
-        rxn_depth[rxn.id] = 0  # cycle guard
-        max_sub = 0
+
+def cascade_shape(cascade: Cascade) -> dict:
+    """Count chemicals and find the max in/out reaction counts in the cascade.
+
+    "Necessary" chemicals are the target plus every substrate of any
+    cascade reaction — pure byproducts (products not consumed downstream
+    and not the target) are excluded. In/out counts are computed only over
+    necessary chemicals.
+    """
+    necessary: set[Chemical] = {cascade.target}
+    for rxn in cascade.reactions:
+        necessary.update(rxn.substrates)
+
+    in_count: dict[Chemical, int] = {c: 0 for c in necessary}
+    out_count: dict[Chemical, int] = {c: 0 for c in necessary}
+    for rxn in cascade.reactions:
+        for p in rxn.products:
+            if p in necessary:
+                in_count[p] += 1
         for s in rxn.substrates:
-            if hg.chemical_to_shell.get(s) == 0:
-                continue
-            sub_rxns = producers_in_pathway.get(s.id, [])
-            for sr in sub_rxns:
-                d = depth_of_rxn(sr)
-                if d > max_sub:
-                    max_sub = d
-        rxn_depth[rxn.id] = 1 + max_sub
-        return rxn_depth[rxn.id]
+            out_count[s] += 1
 
-    target_rxns = producers_in_pathway.get(pathway.target.id, [])
-    if not target_rxns:
-        return 0
-    return max(depth_of_rxn(r) for r in target_rxns)
-
-
-CAP_SWEEP: tuple[int, ...] = (5, 25, 50)
+    max_in_chem = max(in_count, key=lambda c: (in_count[c], -c.id))
+    max_out_chem = max(out_count, key=lambda c: (out_count[c], -c.id))
+    return {
+        "n_chemicals": len(necessary),
+        "max_in_count": in_count[max_in_chem],
+        "max_in_chemical_id": max_in_chem.id,
+        "max_in_chemical_name": max_in_chem.name,
+        "max_out_count": out_count[max_out_chem],
+        "max_out_chemical_id": max_out_chem.id,
+        "max_out_chemical_name": max_out_chem.name,
+    }
 
 
 def evaluate_target(
@@ -113,7 +107,7 @@ def evaluate_target(
     shell_cutoff: int,
     max_producers: int | None,
 ) -> dict:
-    """Run traceback + pathway enumeration on a single target."""
+    """Run traceback on a single target and record cascade-shape metrics."""
     t0 = time.perf_counter()
     cascade = traceback(
         hg,
@@ -123,27 +117,14 @@ def evaluate_target(
     )
     t_cascade = time.perf_counter() - t0
 
-    t0 = time.perf_counter()
-    pathways = enumerate_pathways(cascade, hg, max_pathways=MAX_PATHWAYS)
-    t_pathways = time.perf_counter() - t0
-    hit_cap = len(pathways) >= MAX_PATHWAYS
-
-    depths = [pathway_depth(p, hg) for p in pathways]
-    sizes = [len(p.reactions) for p in pathways]
+    shape = cascade_shape(cascade)
     return {
         "chemical_id": target.id,
         "chemical_name": target.name,
         "target_shell": hg.chemical_to_shell[target],
         "n_reactions": len(cascade.reactions),
-        "n_pathways": len(pathways),
-        "hit_pathway_cap": hit_cap,
-        "min_pathway_depth": min(depths) if depths else None,
-        "mean_pathway_depth": statistics.mean(depths) if depths else None,
-        "max_pathway_depth": max(depths) if depths else None,
-        "mean_pathway_size": statistics.mean(sizes) if sizes else None,
-        "max_pathway_size": max(sizes) if sizes else None,
         "cascade_seconds": t_cascade,
-        "pathways_seconds": t_pathways,
+        **shape,
     }
 
 
@@ -152,31 +133,17 @@ def aggregate(target_results: list[dict]) -> dict:
     if not target_results:
         return {"count": 0}
     n_rxns = [r["n_reactions"] for r in target_results]
-    n_paths = [r["n_pathways"] for r in target_results]
-    mean_depths = [
-        r["mean_pathway_depth"]
-        for r in target_results
-        if r["mean_pathway_depth"] is not None
-    ]
-    max_depths = [
-        r["max_pathway_depth"]
-        for r in target_results
-        if r["max_pathway_depth"] is not None
-    ]
-    coverage = sum(1 for r in target_results if r["n_pathways"] > 0)
-    capped = sum(1 for r in target_results if r.get("hit_pathway_cap"))
+    n_chems = [r["n_chemicals"] for r in target_results]
+    max_ins = [r["max_in_count"] for r in target_results]
+    max_outs = [r["max_out_count"] for r in target_results]
     return {
         "count": len(target_results),
-        "coverage": coverage / len(target_results),
-        "frac_hit_pathway_cap": capped / len(target_results),
         "mean_n_reactions": statistics.mean(n_rxns),
         "median_n_reactions": statistics.median(n_rxns),
-        "mean_n_pathways": statistics.mean(n_paths),
-        "median_n_pathways": statistics.median(n_paths),
-        "mean_pathway_depth_overall": (
-            statistics.mean(mean_depths) if mean_depths else None
-        ),
-        "max_pathway_depth_overall": (max(max_depths) if max_depths else None),
+        "mean_n_chemicals": statistics.mean(n_chems),
+        "median_n_chemicals": statistics.median(n_chems),
+        "max_in_count_overall": max(max_ins),
+        "max_out_count_overall": max(max_outs),
     }
 
 
@@ -234,13 +201,18 @@ def render_cascade_indented(nested: dict, indent: int = 0) -> str:
     return "\n".join(lines)
 
 
-def pick_inspection_target(
-    sampled: dict[int, list[Chemical]], shell: int
-) -> Chemical | None:
-    """Pick a deterministic target from the sample for manual inspection."""
-    if shell not in sampled or not sampled[shell]:
-        return None
-    return sorted(sampled[shell], key=lambda c: c.id)[0]
+def pick_inspection_targets(
+    sampled: dict[int, list[Chemical]],
+) -> list[tuple[str, Chemical]]:
+    """Pick the lowest-shell and highest-shell sampled targets for inspection."""
+    shells = sorted(s for s, chems in sampled.items() if chems)
+    if not shells:
+        return []
+    lo = sorted(sampled[shells[0]], key=lambda c: c.id)[0]
+    if len(shells) == 1:
+        return [(f"shell-{shells[0]}", lo)]
+    hi = sorted(sampled[shells[-1]], key=lambda c: c.id)[0]
+    return [(f"shell-{shells[0]}", lo), (f"shell-{shells[-1]}", hi)]
 
 
 def main() -> None:
@@ -269,13 +241,12 @@ def main() -> None:
     for shell, chems in sorted(sampled.items()):
         print(f"  shell {shell}: {len(chems)} targets")
 
-    inspection_shell1 = pick_inspection_target(sampled, 1)
-    inspection_shell2 = pick_inspection_target(sampled, 2)
+    inspection_targets = pick_inspection_targets(sampled)
 
     results: dict = {
         "approach": "shell-cutoff",
         "seed": SEED,
-        "samples_per_shell": SAMPLES_PER_SHELL,
+        "total_samples": TOTAL_SAMPLES,
         "max_shell": max(sampled) if sampled else 0,
         "cap_sweep": caps,
         "sampled_targets": {
@@ -295,14 +266,13 @@ def main() -> None:
             for shell, chems in sorted(sampled.items()):
                 target_results = []
                 for chem in chems:
-                    r = evaluate_target(
-                        hg, chem, shell_cutoff=n, max_producers=cap
-                    )
+                    r = evaluate_target(hg, chem, shell_cutoff=n, max_producers=cap)
                     target_results.append(r)
                     print(
                         f"  shell {shell} [{chem.name[:40]:40}] "
-                        f"rxns={r['n_reactions']:5d} paths={r['n_pathways']:6d} "
-                        f"depth(mean/max)={r['mean_pathway_depth']}/{r['max_pathway_depth']}"
+                        f"rxns={r['n_reactions']:5d} chems={r['n_chemicals']:5d} "
+                        f"max_in={r['max_in_count']} (id={r['max_in_chemical_id']}) "
+                        f"max_out={r['max_out_count']} (id={r['max_out_chemical_id']})"
                     )
                 per_shell[shell] = target_results
 
@@ -314,38 +284,31 @@ def main() -> None:
                     }
                     for shell, tr in per_shell.items()
                 },
-                "overall": aggregate(
-                    [r for tr in per_shell.values() for r in tr]
-                ),
+                "overall": aggregate([r for tr in per_shell.values() for r in tr]),
             }
 
-            # Inspection cascades for shell 1 + shell 2 at this (cutoff, cap).
-            for label, target in (
-                ("shell-1", inspection_shell1),
-                ("shell-2", inspection_shell2),
-            ):
-                if target is None:
-                    continue
-                cascade = traceback(
-                    hg,
-                    target,
-                    shell_cutoff=n,
-                    max_producers_per_chemical=cap,
-                )
-                nested = render_cascade_nested(hg, cascade)
-                inspection_lines.append(
-                    f"\n{'=' * 70}\n"
-                    f"shell_cutoff = {n}, max_producers = {cap}, "
-                    f"inspection target = {label}\n"
-                    f"  {target.name} (id={target.id}, "
-                    f"shell={hg.chemical_to_shell[target]})\n"
-                    f"  {len(cascade.reactions)} reactions in cascade\n"
-                    f"{'=' * 70}\n"
-                )
-                inspection_lines.append(render_cascade_indented(nested))
-                inspection_lines.append("")
-                inspection_lines.append("--- nested dict ---")
-                inspection_lines.append(json.dumps(nested, indent=2))
+            # Inspection cascades for picked targets at this (cutoff, cap).
+            # for label, target in inspection_targets:
+            #     cascade = traceback(
+            #         hg,
+            #         target,
+            #         shell_cutoff=n,
+            #         max_producers_per_chemical=cap,
+            #     )
+            #     nested = render_cascade_nested(hg, cascade)
+            #     inspection_lines.append(
+            #         f"\n{'=' * 70}\n"
+            #         f"shell_cutoff = {n}, max_producers = {cap}, "
+            #         f"inspection target = {label}\n"
+            #         f"  {target.name} (id={target.id}, "
+            #         f"shell={hg.chemical_to_shell[target]})\n"
+            #         f"  {len(cascade.reactions)} reactions in cascade\n"
+            #         f"{'=' * 70}\n"
+            #     )
+            #     inspection_lines.append(render_cascade_indented(nested))
+            #     inspection_lines.append("")
+            #     inspection_lines.append("--- nested dict ---")
+            #     inspection_lines.append(json.dumps(nested, indent=2))
 
     json_path = RESULTS_DIR / "shell-cutoff.json"
     text_path = RESULTS_DIR / "shell-cutoff_inspection.txt"
