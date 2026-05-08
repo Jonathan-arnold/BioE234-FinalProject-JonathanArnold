@@ -1,9 +1,10 @@
-"""Evaluate the shell-cutoff approach across a sweep of cutoff values.
+"""Evaluate the shell-cutoff + max-producers combo across a 2-D sweep.
 
-Builds the hypergraph once, samples 5 reachables per shell (seeded), then for
-each n in [-1, max_cutoff] runs traceback + enumerate_pathways on every
-sampled target and records per-shell metrics. Also renders one shell-1 and
-one shell-2 target's cascade as a nested dict for manual inspection.
+Builds the hypergraph once, samples reachables per shell (seeded), then for
+each (shell_cutoff, max_producers_per_chemical) combination runs traceback +
+enumerate_pathways on every sampled target and records per-shell metrics.
+Also renders one shell-1 and one shell-2 target's cascade as a nested dict
+for manual inspection at each combo.
 
 Usage:
     python scripts/evaluate.py --max-cutoff 2
@@ -103,10 +104,23 @@ def pathway_depth(pathway: Pathway, hg: HyperGraph) -> int:
     return max(depth_of_rxn(r) for r in target_rxns)
 
 
-def evaluate_target(hg: HyperGraph, target: Chemical, shell_cutoff: int) -> dict:
+CAP_SWEEP: tuple[int, ...] = (5, 25, 50)
+
+
+def evaluate_target(
+    hg: HyperGraph,
+    target: Chemical,
+    shell_cutoff: int,
+    max_producers: int | None,
+) -> dict:
     """Run traceback + pathway enumeration on a single target."""
     t0 = time.perf_counter()
-    cascade = traceback(hg, target, shell_cutoff=shell_cutoff)
+    cascade = traceback(
+        hg,
+        target,
+        shell_cutoff=shell_cutoff,
+        max_producers_per_chemical=max_producers,
+    )
     t_cascade = time.perf_counter() - t0
 
     t0 = time.perf_counter()
@@ -244,7 +258,9 @@ def main() -> None:
 
     RESULTS_DIR.mkdir(exist_ok=True)
     cutoffs = list(range(-1, args.max_cutoff + 1))
+    caps = list(CAP_SWEEP)
     print(f"Sweeping shell_cutoff over: {cutoffs}")
+    print(f"Sweeping max_producers_per_chemical over: {caps}")
 
     hg, _ = build_hypergraph()
 
@@ -261,6 +277,7 @@ def main() -> None:
         "seed": SEED,
         "samples_per_shell": SAMPLES_PER_SHELL,
         "max_shell": max(sampled) if sampled else 0,
+        "cap_sweep": caps,
         "sampled_targets": {
             str(shell): [{"id": c.id, "name": c.name} for c in chems]
             for shell, chems in sampled.items()
@@ -271,52 +288,64 @@ def main() -> None:
     inspection_lines: list[str] = []
 
     for n in cutoffs:
-        print(f"\n=== shell_cutoff = {n} ===")
-        per_shell: dict[int, list[dict]] = {}
-        for shell, chems in sorted(sampled.items()):
-            target_results = []
-            for chem in chems:
-                r = evaluate_target(hg, chem, shell_cutoff=n)
-                target_results.append(r)
-                print(
-                    f"  shell {shell} [{chem.name[:40]:40}] "
-                    f"rxns={r['n_reactions']:5d} paths={r['n_pathways']:6d} "
-                    f"depth(mean/max)={r['mean_pathway_depth']}/{r['max_pathway_depth']}"
+        results["sweep"][str(n)] = {}
+        for cap in caps:
+            print(f"\n=== shell_cutoff = {n}, max_producers = {cap} ===")
+            per_shell: dict[int, list[dict]] = {}
+            for shell, chems in sorted(sampled.items()):
+                target_results = []
+                for chem in chems:
+                    r = evaluate_target(
+                        hg, chem, shell_cutoff=n, max_producers=cap
+                    )
+                    target_results.append(r)
+                    print(
+                        f"  shell {shell} [{chem.name[:40]:40}] "
+                        f"rxns={r['n_reactions']:5d} paths={r['n_pathways']:6d} "
+                        f"depth(mean/max)={r['mean_pathway_depth']}/{r['max_pathway_depth']}"
+                    )
+                per_shell[shell] = target_results
+
+            results["sweep"][str(n)][str(cap)] = {
+                "per_shell": {
+                    str(shell): {
+                        "targets": tr,
+                        "summary": aggregate(tr),
+                    }
+                    for shell, tr in per_shell.items()
+                },
+                "overall": aggregate(
+                    [r for tr in per_shell.values() for r in tr]
+                ),
+            }
+
+            # Inspection cascades for shell 1 + shell 2 at this (cutoff, cap).
+            for label, target in (
+                ("shell-1", inspection_shell1),
+                ("shell-2", inspection_shell2),
+            ):
+                if target is None:
+                    continue
+                cascade = traceback(
+                    hg,
+                    target,
+                    shell_cutoff=n,
+                    max_producers_per_chemical=cap,
                 )
-            per_shell[shell] = target_results
-
-        results["sweep"][str(n)] = {
-            "per_shell": {
-                str(shell): {
-                    "targets": tr,
-                    "summary": aggregate(tr),
-                }
-                for shell, tr in per_shell.items()
-            },
-            "overall": aggregate([r for tr in per_shell.values() for r in tr]),
-        }
-
-        # Inspection cascades for shell 1 + shell 2.
-        for label, target in (
-            ("shell-1", inspection_shell1),
-            ("shell-2", inspection_shell2),
-        ):
-            if target is None:
-                continue
-            cascade = traceback(hg, target, shell_cutoff=n)
-            nested = render_cascade_nested(hg, cascade)
-            inspection_lines.append(
-                f"\n{'=' * 70}\n"
-                f"shell_cutoff = {n}, inspection target = {label}\n"
-                f"  {target.name} (id={target.id}, "
-                f"shell={hg.chemical_to_shell[target]})\n"
-                f"  {len(cascade.reactions)} reactions in cascade\n"
-                f"{'=' * 70}\n"
-            )
-            inspection_lines.append(render_cascade_indented(nested))
-            inspection_lines.append("")
-            inspection_lines.append("--- nested dict ---")
-            inspection_lines.append(json.dumps(nested, indent=2))
+                nested = render_cascade_nested(hg, cascade)
+                inspection_lines.append(
+                    f"\n{'=' * 70}\n"
+                    f"shell_cutoff = {n}, max_producers = {cap}, "
+                    f"inspection target = {label}\n"
+                    f"  {target.name} (id={target.id}, "
+                    f"shell={hg.chemical_to_shell[target]})\n"
+                    f"  {len(cascade.reactions)} reactions in cascade\n"
+                    f"{'=' * 70}\n"
+                )
+                inspection_lines.append(render_cascade_indented(nested))
+                inspection_lines.append("")
+                inspection_lines.append("--- nested dict ---")
+                inspection_lines.append(json.dumps(nested, indent=2))
 
     json_path = RESULTS_DIR / "shell-cutoff.json"
     text_path = RESULTS_DIR / "shell-cutoff_inspection.txt"

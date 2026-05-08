@@ -106,6 +106,15 @@ def test_get_cascade_for_target():
     assert 7 in rxn_ids and 8 in rxn_ids
 
 
+def test_get_cascade_max_producers_cap_caps_branching():
+    # T has two producers (R6 id=7 shell-3, R7 id=8 shell-1). With the shell
+    # filter loose enough to admit both, max_producers_per_chemical=1 should
+    # keep only the lower-shell producer (R7).
+    cascade = get_cascade("T", shell_cutoff=2, max_producers_per_chemical=1)
+    rxn_ids = {r["id"] for r in cascade["reactions"]}
+    assert rxn_ids == {8}
+
+
 def test_enumerate_pathways_for_target():
     pathways = enumerate_pathways_for("T", max_pathways=5)
     assert pathways, "expected at least one pathway to T"
