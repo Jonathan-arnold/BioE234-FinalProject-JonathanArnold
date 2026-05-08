@@ -1,11 +1,50 @@
-"""Enumerate individual Pathways from a Cascade."""
+"""Enumerate individual Pathways from a Cascade.
+
+A pathway is a set of reactions that produces the cascade's target from
+shell-0 (native) chemicals. Enumeration uses a shared-frontier choice-function
+model: a partial pathway is a map (chemical -> chosen producer reaction) plus
+a frontier of chemicals still needing a producer. Distinct choice-functions
+yield distinct reaction sets (modulo multi-product overlap, which is deduped
+at yield time), so there is no cartesian-product explosion to collapse.
+"""
 
 from __future__ import annotations
 
-import itertools
-from itertools import islice
+from typing import Iterator
 
 from synthesis_helper.models import Cascade, Chemical, HyperGraph, Pathway, Reaction
+
+
+def _topological_order(
+    rxn_set: set[Reaction], hypergraph: HyperGraph
+) -> list[Reaction] | None:
+    """Order reactions so each fires only after its substrates are produced.
+
+    Returns None if some reaction in the set is not forward-reachable from
+    shell-0 chemicals through the rest of the set — the canonical
+    cycle-disconnected-from-natives case.
+    """
+    produced: set[Chemical] = set()
+    remaining = list(rxn_set)
+    order: list[Reaction] = []
+    while remaining:
+        ready = [
+            r
+            for r in remaining
+            if all(
+                hypergraph.chemical_to_shell.get(s) == 0 or s in produced
+                for s in r.substrates
+            )
+        ]
+        if not ready:
+            return None
+        ready.sort(key=lambda r: r.id)
+        for r in ready:
+            order.append(r)
+            produced.update(r.products)
+        ready_ids = {r.id for r in ready}
+        remaining = [r for r in remaining if r.id not in ready_ids]
+    return order
 
 
 def enumerate_pathways(
@@ -13,93 +52,70 @@ def enumerate_pathways(
     hypergraph: HyperGraph,
     max_pathways: int = 1000,
 ) -> list[Pathway]:
-    """Enumerate pathways implied by a cascade.
+    """Enumerate distinct pathways implied by a cascade.
 
-    A Pathway is a set of reactions whose combined products include the target
-    and whose substrates are all either produced by some reaction in the set
-    or native (shell 0). Reactions are returned in topological order — every
-    reaction comes after the reactions producing its non-native substrates.
+    Walks a choice-function search tree: at each step, pop the lowest-id
+    chemical from the frontier and branch over its producer reactions. Each
+    chosen producer adds its non-native substrates that aren't already decided
+    to the frontier. A complete pathway is yielded when the frontier is
+    empty.
 
-    For reactions with multiple non-native substrates (e.g. ligase reactions,
-    aldol condensations), pathways branch across all substrates: the final
-    pathway includes a sub-pathway to produce each one. This is the cartesian
-    product of per-substrate sub-pathway sets, capped at max_pathways.
-
-    Args:
-        cascade: the cascade produced by traceback().
-        hypergraph: the HyperGraph (used for shell lookups).
-        max_pathways: global cap on returned pathways. Also bounds per-
-            substrate enumeration during recursion, to keep combinatorial
-            blowup from exhausting memory before the outer cap fires.
+    Pathways disconnected from shell-0 chemicals (cycle-only reaction sets)
+    are dropped via the topological-order check. Multi-product reactions can
+    occasionally produce two distinct choice-functions that map to the same
+    reaction set; those are deduped at yield time via a frozenset key.
     """
+    target = cascade.target
+
+    if hypergraph.chemical_to_shell.get(target) == 0:
+        return [Pathway(target=target, reactions=[], metabolites={target})]
+
     producers: dict[Chemical, list[Reaction]] = {}
     for rxn in cascade.reactions:
         for product in rxn.products:
             producers.setdefault(product, []).append(rxn)
+    for rxns in producers.values():
+        rxns.sort(key=lambda r: r.id)
 
-    in_progress: set[int] = set()
+    seen_keys: set[frozenset[int]] = set()
 
-    def paths_for(chem: Chemical) -> "itertools.chain[list[Reaction]]":
-        """Yield lists of reactions that produce chem, in topological order.
-
-        Empty list => chem is shell 0 (no reactions needed). Cycles are
-        broken via in_progress: if chem is already being produced upstream
-        in the current branch, we yield nothing.
-        """
-        if hypergraph.chemical_to_shell.get(chem) == 0:
-            yield []
+    def walk(
+        choices: dict[Chemical, Reaction], frontier: frozenset[Chemical]
+    ) -> Iterator[set[Reaction]]:
+        if not frontier:
+            rxn_set = set(choices.values())
+            key = frozenset(r.id for r in rxn_set)
+            if key in seen_keys:
+                return
+            seen_keys.add(key)
+            yield rxn_set
             return
-        if chem.id in in_progress:
-            return
 
-        in_progress.add(chem.id)
-        try:
-            for rxn in producers.get(chem, []):
-                non_native = sorted(
-                    (s for s in rxn.substrates
-                     if hypergraph.chemical_to_shell.get(s) != 0),
-                    key=lambda s: s.id,
-                )
-
-                if not non_native:
-                    yield [rxn]
-                    continue
-
-                sub_path_lists: list[list[list[Reaction]]] = []
-                for sub in non_native:
-                    sp = list(islice(paths_for(sub), max_pathways))
-                    if not sp:
-                        break
-                    sub_path_lists.append(sp)
-                if len(sub_path_lists) != len(non_native):
-                    continue
-
-                for combo in itertools.product(*sub_path_lists):
-                    merged: list[Reaction] = []
-                    seen: set[int] = set()
-                    for sub_rxns in combo:
-                        for r in sub_rxns:
-                            if r.id not in seen:
-                                merged.append(r)
-                                seen.add(r.id)
-                    if rxn.id not in seen:
-                        merged.append(rxn)
-                    yield merged
-        finally:
-            in_progress.discard(chem.id)
+        chem = min(frontier, key=lambda c: c.id)
+        rest = frontier - {chem}
+        for rxn in producers.get(chem, ()):
+            new_choices = {**choices, chem: rxn}
+            needs = frozenset(
+                s
+                for s in rxn.substrates
+                if hypergraph.chemical_to_shell.get(s) != 0
+                and s not in new_choices
+            )
+            yield from walk(new_choices, rest | needs)
 
     results: list[Pathway] = []
-    for rxns in islice(paths_for(cascade.target), max_pathways):
+    for rxn_set in walk({}, frozenset({target})):
+        ordered = _topological_order(rxn_set, hypergraph)
+        if ordered is None:
+            continue
         metabolites: set[Chemical] = set()
-        for rxn in rxns:
-            metabolites.update(rxn.substrates)
-            metabolites.update(rxn.products)
+        for r in ordered:
+            metabolites.update(r.substrates)
+            metabolites.update(r.products)
         results.append(
-            Pathway(
-                target=cascade.target,
-                reactions=rxns,
-                metabolites=metabolites,
-            )
+            Pathway(target=target, reactions=ordered, metabolites=metabolites)
         )
+        if len(results) >= max_pathways:
+            break
 
     return results
