@@ -1,11 +1,12 @@
 """Evaluate the shell-cutoff + max-producers combo across a 2-D sweep.
 
-Builds the hypergraph once, samples reachables per shell (seeded), then for
-each (shell_cutoff, max_producers_per_chemical) combination runs traceback
-on every sampled target and records cascade-shape metrics per shell.
+Builds the hypergraph once, samples reachables per shell (seeded) — or loads
+matched targets via --use-matches — then for each (shell_cutoff,
+max_producers_per_chemical) combination runs traceback on every target and
+records cascade-shape metrics per shell.
 
 Usage:
-    python scripts/evaluate.py --max-cutoff 2
+    python scripts/evaluate.py --max-cutoff 2 [--use-matches]
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from synthesis_helper.models import Cascade, Chemical, HyperGraph, Reaction
+from synthesis_helper.models import Cascade, Chemical, HyperGraph
 from synthesis_helper.parser import (
     parse_chemicals,
     parse_metabolite_list,
@@ -30,6 +31,8 @@ from synthesis_helper.traceback import traceback
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data"
 RESULTS_DIR = REPO_ROOT / "eval_results"
+MATCHES_PATH = REPO_ROOT / "data" / "comparison_targets.tsv"
+MATCHES_ID_COLUMN = "shell_cutoff_id"
 SEED = 20260509
 TOTAL_SAMPLES = 5
 CAP_SWEEP: tuple[int, ...] = (5, 10, 15)
@@ -64,6 +67,45 @@ def sample_targets_per_shell(hg: HyperGraph) -> dict[int, list[Chemical]]:
     sampled: dict[int, list[Chemical]] = defaultdict(list)
     for c in chosen:
         sampled[hg.chemical_to_shell[c]].append(c)
+    return dict(sorted(sampled.items()))
+
+
+def load_match_targets(
+    hg: HyperGraph, chemicals: dict[int, Chemical]
+) -> dict[int, list[Chemical]]:
+    """Load targets from data/comparison_targets.tsv, grouped by current shell.
+
+    Uses MATCHES_ID_COLUMN to pick the correct branch-local chemical id.
+    Skips rows whose id isn't a known chemical or isn't reachable in hg.
+    """
+    sampled: dict[int, list[Chemical]] = defaultdict(list)
+    skipped_unknown = 0
+    skipped_unreachable = 0
+    with MATCHES_PATH.open() as f:
+        header = f.readline().rstrip("\n").split("\t")
+        idx = header.index(MATCHES_ID_COLUMN)
+        for line in f:
+            parts = line.rstrip("\n").split("\t")
+            try:
+                chem_id = int(parts[idx])
+            except (ValueError, IndexError):
+                continue
+            chem = chemicals.get(chem_id)
+            if chem is None:
+                skipped_unknown += 1
+                continue
+            shell = hg.chemical_to_shell.get(chem)
+            if shell is None:
+                skipped_unreachable += 1
+                continue
+            sampled[shell].append(chem)
+    for chems in sampled.values():
+        chems.sort(key=lambda c: c.id)
+    print(
+        f"Loaded {sum(len(v) for v in sampled.values())} match targets from "
+        f"{MATCHES_PATH.name} (skipped {skipped_unknown} unknown id, "
+        f"{skipped_unreachable} unreachable)"
+    )
     return dict(sorted(sampled.items()))
 
 
@@ -147,74 +189,6 @@ def aggregate(target_results: list[dict]) -> dict:
     }
 
 
-def render_cascade_nested(
-    hg: HyperGraph,
-    cascade: Cascade,
-) -> dict:
-    """Render a cascade as a nested dict for human inspection.
-
-    Cycles are broken: a chemical already expanded higher in the current
-    branch is rendered as the string "<seen above>".
-    """
-    producers: dict[int, list[Reaction]] = {}
-    for rxn in cascade.reactions:
-        for prod in rxn.products:
-            producers.setdefault(prod.id, []).append(rxn)
-    for rxns in producers.values():
-        rxns.sort(key=lambda r: r.id)
-
-    def chem_label(c: Chemical) -> str:
-        return f"[shell {hg.chemical_to_shell.get(c, '?')}] {c.name} (id={c.id})"
-
-    def expand_chem(chem: Chemical, in_path: set[int]) -> object:
-        shell = hg.chemical_to_shell.get(chem)
-        if shell == 0:
-            return "<shell 0>"
-        if chem.id in in_path:
-            return "<seen above>"
-        rxns = producers.get(chem.id, [])
-        if not rxns:
-            return "<no producer in cascade>"
-        in_path = in_path | {chem.id}
-        return {
-            f"rxn {r.id}"
-            + (f" (EC {r.ecnum})" if r.ecnum else ""): {
-                chem_label(s): expand_chem(s, in_path)
-                for s in sorted(r.substrates, key=lambda x: x.id)
-            }
-            for r in rxns
-        }
-
-    return {chem_label(cascade.target): expand_chem(cascade.target, set())}
-
-
-def render_cascade_indented(nested: dict, indent: int = 0) -> str:
-    """Flat indented form of the nested-dict cascade."""
-    lines: list[str] = []
-    pad = "  " * indent
-    if isinstance(nested, str):
-        lines.append(f"{pad}{nested}")
-        return "\n".join(lines)
-    for key, val in nested.items():
-        lines.append(f"{pad}{key}")
-        lines.append(render_cascade_indented(val, indent + 1))
-    return "\n".join(lines)
-
-
-def pick_inspection_targets(
-    sampled: dict[int, list[Chemical]],
-) -> list[tuple[str, Chemical]]:
-    """Pick the lowest-shell and highest-shell sampled targets for inspection."""
-    shells = sorted(s for s, chems in sampled.items() if chems)
-    if not shells:
-        return []
-    lo = sorted(sampled[shells[0]], key=lambda c: c.id)[0]
-    if len(shells) == 1:
-        return [(f"shell-{shells[0]}", lo)]
-    hi = sorted(sampled[shells[-1]], key=lambda c: c.id)[0]
-    return [(f"shell-{shells[0]}", lo), (f"shell-{shells[-1]}", hi)]
-
-
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument(
@@ -226,6 +200,14 @@ def main() -> None:
             "If omitted, run a single point with no shell cutoff."
         ),
     )
+    ap.add_argument(
+        "--use-matches",
+        action="store_true",
+        help=(
+            "Use targets from data/comparison_targets.tsv (cross-branch matched "
+            "reachables) instead of fresh random sampling."
+        ),
+    )
     args = ap.parse_args()
 
     if args.max_cutoff is not None and args.max_cutoff < -1:
@@ -234,7 +216,7 @@ def main() -> None:
     RESULTS_DIR.mkdir(exist_ok=True)
     caps = list(CAP_SWEEP)
 
-    hg, _ = build_hypergraph()
+    hg, chemicals = build_hypergraph()
 
     if args.max_cutoff is None:
         max_shell = max(hg.chemical_to_shell.values(), default=0)
@@ -247,17 +229,23 @@ def main() -> None:
         print(f"Sweeping shell_cutoff over: {cutoffs}")
     print(f"Sweeping max_producers_per_chemical over: {caps}")
 
-    sampled = sample_targets_per_shell(hg)
+    if args.use_matches:
+        sampled = load_match_targets(hg, chemicals)
+    else:
+        sampled = sample_targets_per_shell(hg)
     print("\nSampled targets per shell:")
     for shell, chems in sorted(sampled.items()):
         print(f"  shell {shell}: {len(chems)} targets")
 
-    inspection_targets = pick_inspection_targets(sampled)
-
     results: dict = {
         "approach": "shell-cutoff",
+        "target_source": "matches" if args.use_matches else "random_sample",
         "seed": SEED,
-        "total_samples": TOTAL_SAMPLES,
+        "total_samples": (
+            sum(len(v) for v in sampled.values())
+            if args.use_matches
+            else TOTAL_SAMPLES
+        ),
         "max_shell": max(sampled) if sampled else 0,
         "cap_sweep": caps,
         "sampled_targets": {
@@ -266,8 +254,6 @@ def main() -> None:
         },
         "sweep": {},
     }
-
-    inspection_lines: list[str] = []
 
     for n in cutoffs:
         label = cutoff_labels[n]
@@ -299,35 +285,10 @@ def main() -> None:
                 "overall": aggregate([r for tr in per_shell.values() for r in tr]),
             }
 
-            # Inspection cascades for picked targets at this (cutoff, cap).
-            # for label, target in inspection_targets:
-            #     cascade = traceback(
-            #         hg,
-            #         target,
-            #         shell_cutoff=n,
-            #         max_producers_per_chemical=cap,
-            #     )
-            #     nested = render_cascade_nested(hg, cascade)
-            #     inspection_lines.append(
-            #         f"\n{'=' * 70}\n"
-            #         f"shell_cutoff = {n}, max_producers = {cap}, "
-            #         f"inspection target = {label}\n"
-            #         f"  {target.name} (id={target.id}, "
-            #         f"shell={hg.chemical_to_shell[target]})\n"
-            #         f"  {len(cascade.reactions)} reactions in cascade\n"
-            #         f"{'=' * 70}\n"
-            #     )
-            #     inspection_lines.append(render_cascade_indented(nested))
-            #     inspection_lines.append("")
-            #     inspection_lines.append("--- nested dict ---")
-            #     inspection_lines.append(json.dumps(nested, indent=2))
-
-    json_path = RESULTS_DIR / "shell-cutoff.json"
-    text_path = RESULTS_DIR / "shell-cutoff_inspection.txt"
+    suffix = "_matches" if args.use_matches else ""
+    json_path = RESULTS_DIR / f"shell-cutoff{suffix}.json"
     json_path.write_text(json.dumps(results, indent=2))
-    text_path.write_text("\n".join(inspection_lines))
     print(f"\nWrote {json_path}")
-    print(f"Wrote {text_path}")
 
 
 if __name__ == "__main__":
