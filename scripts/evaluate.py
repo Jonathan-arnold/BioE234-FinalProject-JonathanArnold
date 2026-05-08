@@ -2,9 +2,10 @@
 
 Builds the hypergraph via the two-pass BFS from main.py (E. coli reactions
 seed shell 0; full EnzymeMap expansion runs from there), samples reachables
-per shell, then runs traceback on every sampled target with shell_cutoff
-left unlimited and records cascade-shape metrics. Also renders one shell-1
-and one shell-2 target's cascade as a nested dict for manual inspection.
+uniformly across all non-shell-0 chemicals, then runs traceback on every
+sampled target with shell_cutoff left unlimited and records cascade-shape
+metrics. Also renders the lowest- and highest-shell sampled targets'
+cascades as nested dicts for manual inspection.
 
 Usage:
     python scripts/evaluate.py
@@ -32,8 +33,8 @@ from synthesis_helper.traceback import traceback
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data"
 RESULTS_DIR = REPO_ROOT / "eval_results"
-SEED = 20260507
-SAMPLES_PER_SHELL = 1
+SEED = 20260508
+TOTAL_SAMPLES = 5
 ECOLI_TOKEN = "escherichia coli"
 
 
@@ -63,19 +64,22 @@ def build_hypergraph() -> tuple[HyperGraph, dict[int, Chemical]]:
 
 
 def sample_targets_per_shell(hg: HyperGraph) -> dict[int, list[Chemical]]:
-    """Group reachables by shell (excluding shell 0), sample SAMPLES_PER_SHELL each."""
-    by_shell: dict[int, list[Chemical]] = defaultdict(list)
-    for chem, shell in hg.chemical_to_shell.items():
-        if shell > 0:
-            by_shell[shell].append(chem)
+    """Sample TOTAL_SAMPLES reachables uniformly from all non-shell-0 chemicals.
 
+    Returned grouped by shell so downstream per-shell reporting still works.
+    """
+    pool = sorted(
+        (c for c, s in hg.chemical_to_shell.items() if s > 0),
+        key=lambda c: c.id,
+    )
     rng = random.Random(SEED)
-    sampled: dict[int, list[Chemical]] = {}
-    for shell in sorted(by_shell):
-        pool = sorted(by_shell[shell], key=lambda c: c.id)  # determinism
-        k = min(SAMPLES_PER_SHELL, len(pool))
-        sampled[shell] = rng.sample(pool, k)
-    return sampled
+    k = min(TOTAL_SAMPLES, len(pool))
+    chosen = rng.sample(pool, k)
+
+    sampled: dict[int, list[Chemical]] = defaultdict(list)
+    for c in chosen:
+        sampled[hg.chemical_to_shell[c]].append(c)
+    return dict(sorted(sampled.items()))
 
 
 def cascade_shape(cascade: Cascade) -> dict:
@@ -194,12 +198,18 @@ def render_cascade_indented(nested: dict, indent: int = 0) -> str:
     return "\n".join(lines)
 
 
-def pick_inspection_target(
-    sampled: dict[int, list[Chemical]], shell: int
-) -> Chemical | None:
-    if shell not in sampled or not sampled[shell]:
-        return None
-    return sorted(sampled[shell], key=lambda c: c.id)[0]
+def pick_inspection_targets(
+    sampled: dict[int, list[Chemical]],
+) -> list[tuple[str, Chemical]]:
+    """Pick the lowest-shell and highest-shell sampled targets for inspection."""
+    shells = sorted(s for s, chems in sampled.items() if chems)
+    if not shells:
+        return []
+    lo = sorted(sampled[shells[0]], key=lambda c: c.id)[0]
+    if len(shells) == 1:
+        return [(f"shell-{shells[0]}", lo)]
+    hi = sorted(sampled[shells[-1]], key=lambda c: c.id)[0]
+    return [(f"shell-{shells[0]}", lo), (f"shell-{shells[-1]}", hi)]
 
 
 def main() -> None:
@@ -212,8 +222,7 @@ def main() -> None:
     for shell, chems in sorted(sampled.items()):
         print(f"  shell {shell}: {len(chems)} targets")
 
-    inspection_shell1 = pick_inspection_target(sampled, 1)
-    inspection_shell2 = pick_inspection_target(sampled, 2)
+    inspection_targets = pick_inspection_targets(sampled)
 
     per_shell: dict[int, list[dict]] = {}
     for shell, chems in sorted(sampled.items()):
@@ -232,7 +241,7 @@ def main() -> None:
         "approach": "enzymemap-shell0",
         "shell_cutoff": "unlimited",
         "seed": SEED,
-        "samples_per_shell": SAMPLES_PER_SHELL,
+        "total_samples": TOTAL_SAMPLES,
         "max_shell": max(sampled) if sampled else 0,
         "sampled_targets": {
             str(shell): [{"id": c.id, "name": c.name} for c in chems]
@@ -249,12 +258,7 @@ def main() -> None:
     }
 
     inspection_lines: list[str] = []
-    for label, target in (
-        ("shell-1", inspection_shell1),
-        ("shell-2", inspection_shell2),
-    ):
-        if target is None:
-            continue
+    for label, target in inspection_targets:
         cascade = traceback(hg, target)
         nested = render_cascade_nested(hg, cascade)
         inspection_lines.append(
