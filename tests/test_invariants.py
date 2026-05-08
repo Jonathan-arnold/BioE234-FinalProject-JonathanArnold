@@ -345,8 +345,8 @@ def test_end_to_end_parse_synthesize_traceback(small_cell, tmp_path):
 
     write_small_cell_tsvs(small_cell, tmp_path)
 
-    chems_by_id = parse_chemicals(tmp_path / "good_chems.txt")
-    reactions = parse_reactions(tmp_path / "good_reactions.txt", chems_by_id)
+    chems_by_id = parse_chemicals(tmp_path / "enzymemap_chems.tsv")
+    reactions = parse_reactions(tmp_path / "enzymemap_reactions.tsv", chems_by_id)
     natives = parse_metabolite_list(tmp_path / "minimal_metabolites.txt", chems_by_id)
     universals = parse_metabolite_list(
         tmp_path / "ubiquitous_metabolites.txt", chems_by_id

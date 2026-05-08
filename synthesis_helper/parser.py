@@ -165,3 +165,21 @@ def parse_metabolite_list(
         )
 
     return metabolites
+
+
+def parse_reaction_organisms(filepath: str | Path) -> dict[int, list[str]]:
+    """Parse the EnzymeMap organism sidecar → {rxnid: [organism, ...]}.
+
+    Expected format (tab-separated, with header):
+        rxnid  organisms       (comma-separated organism strings)
+    """
+    out: dict[int, list[str]] = {}
+    for line in _read_lines(filepath):
+        if not line or line.startswith("rxnid"):
+            continue
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        rxn_id = int(parts[0])
+        out[rxn_id] = [o for o in parts[1].split(",") if o]
+    return out

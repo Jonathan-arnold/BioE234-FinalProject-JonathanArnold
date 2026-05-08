@@ -14,6 +14,7 @@ from synthesis_helper.models import Chemical, HyperGraph, Reaction
 from synthesis_helper.parser import (
     parse_chemicals,
     parse_metabolite_list,
+    parse_reaction_organisms,
     parse_reactions,
 )
 from synthesis_helper.synthesize import synthesize
@@ -157,8 +158,9 @@ def _bootstrap() -> None:
     data = _state.data_dir
     t0 = time.perf_counter()
 
-    chemicals = parse_chemicals(data / "good_chems.txt")
-    reactions = parse_reactions(data / "good_reactions.txt", chemicals)
+    chemicals = parse_chemicals(data / "enzymemap_chems.tsv")
+    reactions = parse_reactions(data / "enzymemap_reactions.tsv", chemicals)
+    rxn_orgs = parse_reaction_organisms(data / "enzymemap_reaction_organisms.tsv")
     natives = parse_metabolite_list(data / "minimal_metabolites.txt", chemicals)
     universals = parse_metabolite_list(
         data / "ubiquitous_metabolites.txt", chemicals
@@ -169,7 +171,16 @@ def _bootstrap() -> None:
         descriptor_filter=CURRENCY_DESCRIPTORS,
     )
 
-    hg = synthesize(reactions, natives, universals, verbose=False)
+    # Two-pass BFS (approach #2): E. coli reactions seed shell 0 for the
+    # full-graph expansion. See main.py / CLAUDE.md for the rationale.
+    token = "escherichia coli"
+    ecoli_reactions = [
+        r for r in reactions
+        if any(token in o.lower() for o in rxn_orgs.get(r.id, ()))
+    ]
+    hg_seed = synthesize(ecoli_reactions, natives, universals, verbose=False)
+    seed = set(hg_seed.chemical_to_shell.keys())
+    hg = synthesize(reactions, seed, set(), verbose=False)
 
     _state.chemicals = chemicals
     _state.reactions = reactions

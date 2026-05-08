@@ -123,14 +123,23 @@ def write_small_cell_tsvs(sc: SmallCell, out_dir: Path) -> None:
     chem_lines = ["id\tname\tinchi\tsmiles"]
     for c in sc.chems.values():
         chem_lines.append(f"{c.id}\t{c.name}\t{c.inchi}\t{c.smiles or 'null'}")
-    (out_dir / "good_chems.txt").write_text("\n".join(chem_lines) + "\n")
+    (out_dir / "enzymemap_chems.tsv").write_text("\n".join(chem_lines) + "\n")
 
     rxn_lines = ["rxnid\tecnum\tsubstrates\tproducts"]
     for r in sc.rxns.values():
         subs = " ".join(str(s.id) for s in r.substrates)
         prods = " ".join(str(p.id) for p in r.products)
         rxn_lines.append(f"{r.id}\t{r.ecnum or ''}\t{subs}\t{prods}")
-    (out_dir / "good_reactions.txt").write_text("\n".join(rxn_lines) + "\n")
+    (out_dir / "enzymemap_reactions.tsv").write_text("\n".join(rxn_lines) + "\n")
+
+    # Organism sidecar: leave every reaction untagged so the two-pass BFS
+    # in MCP state.py reduces to single-pass over the full reaction set —
+    # pass 1 enables nothing (no E. coli reactions), so its reachables are
+    # just the natives ∪ universals, and pass 2 reproduces the original
+    # MetaCyc-era shell numbering the small-cell tests assert against.
+    (out_dir / "enzymemap_reaction_organisms.tsv").write_text(
+        "rxnid\torganisms\n"
+    )
 
     native_lines = ["name\tinchi\tdescriptor"]
     for c in sc.natives:

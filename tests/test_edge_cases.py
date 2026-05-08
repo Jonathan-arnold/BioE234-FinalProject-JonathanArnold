@@ -380,17 +380,17 @@ def test_parse_reactions_silently_drops_unknown_substrate_ids(tmp_path):
     Test pins current behavior; if we later decide to warn or raise on unknown
     ids, this assertion will break loudly and force a conscious choice.
     """
-    (tmp_path / "good_chems.txt").write_text(
+    (tmp_path / "enzymemap_chems.tsv").write_text(
         "id\tname\tinchi\tsmiles\n"
         "1\tA\tInChI=1S/A\tnull\n"
     )
-    (tmp_path / "good_reactions.txt").write_text(
+    (tmp_path / "enzymemap_reactions.tsv").write_text(
         "rxnid\tecnum\tsubstrates\tproducts\n"
         "1\t\t1 99999\t1\n"
     )
 
-    chems = parse_chemicals(tmp_path / "good_chems.txt")
-    reactions = parse_reactions(tmp_path / "good_reactions.txt", chems)
+    chems = parse_chemicals(tmp_path / "enzymemap_chems.tsv")
+    reactions = parse_reactions(tmp_path / "enzymemap_reactions.tsv", chems)
 
     assert len(reactions) == 1
     assert len(reactions[0].substrates) == 1
@@ -401,7 +401,7 @@ def test_parse_metabolite_list_loose_match_adds_all_stereoisomers(tmp_path):
     """A metabolite declared without stereo layers loose-matches BOTH stereoisomers
     in the chemicals corpus. This is the behavior documented in parser.py:94-97
     for handling cofactors like SAM."""
-    (tmp_path / "good_chems.txt").write_text(
+    (tmp_path / "enzymemap_chems.tsv").write_text(
         "id\tname\tinchi\tsmiles\n"
         "1\tchem-R\tInChI=1S/C6H12/t1+/m0/s1\tnull\n"
         "2\tchem-S\tInChI=1S/C6H12/t1-/m1/s1\tnull\n"
@@ -411,7 +411,7 @@ def test_parse_metabolite_list_loose_match_adds_all_stereoisomers(tmp_path):
         "no-stereo\tInChI=1S/C6H12\tfeedstock\n"
     )
 
-    chems = parse_chemicals(tmp_path / "good_chems.txt")
+    chems = parse_chemicals(tmp_path / "enzymemap_chems.tsv")
     metabolites = parse_metabolite_list(tmp_path / "metabolites.txt", chems)
 
     assert {c.id for c in metabolites} == {1, 2}
@@ -420,7 +420,7 @@ def test_parse_metabolite_list_loose_match_adds_all_stereoisomers(tmp_path):
 def test_parse_metabolite_list_name_match_fallback(tmp_path):
     """When strict and loose InChI matches both miss, parser falls back to a
     case-insensitive name match (parser.py:142-144)."""
-    (tmp_path / "good_chems.txt").write_text(
+    (tmp_path / "enzymemap_chems.tsv").write_text(
         "id\tname\tinchi\tsmiles\n"
         "1\tGlucose\tInChI=1S/realglucose\tnull\n"
     )
@@ -429,7 +429,7 @@ def test_parse_metabolite_list_name_match_fallback(tmp_path):
         "glucose\tInChI=1S/differentstring\tfeedstock\n"
     )
 
-    chems = parse_chemicals(tmp_path / "good_chems.txt")
+    chems = parse_chemicals(tmp_path / "enzymemap_chems.tsv")
     metabolites = parse_metabolite_list(tmp_path / "metabolites.txt", chems)
 
     assert len(metabolites) == 1
