@@ -16,10 +16,10 @@ import json
 import random
 import statistics
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
-from synthesis_helper.models import Cascade, Chemical, HyperGraph
+from synthesis_helper.models import Cascade, Chemical, HyperGraph, Reaction
 from synthesis_helper.parser import (
     parse_chemicals,
     parse_metabolite_list,
@@ -109,47 +109,87 @@ def load_match_targets(
     return dict(sorted(sampled.items()))
 
 
-def cascade_shape(cascade: Cascade) -> dict:
-    """Count chemicals and find the max in/out reaction counts in the cascade.
+def build_global_producers(hg: HyperGraph) -> dict[int, list[Reaction]]:
+    """For every chemical, list every enabled reaction that has it as a product."""
+    producers: dict[int, list[Reaction]] = defaultdict(list)
+    for r in hg.reaction_to_shell:
+        for p in r.products:
+            producers[p.id].append(r)
+    return producers
 
-    "Necessary" chemicals are the target plus every substrate of any
-    cascade reaction — pure byproducts (products not consumed downstream
-    and not the target) are excluded. In/out counts are computed only over
-    necessary chemicals.
+
+def target_diagnostics(
+    hg: HyperGraph,
+    cascade: Cascade,
+    global_producers: dict[int, list[Reaction]],
+    top_n: int = 10,
+) -> dict:
+    """Rich per-target diagnostics for one cascade.
+
+    "Necessary" chemicals = the target plus every substrate of any cascade
+    reaction (pure byproducts excluded). For each non-shell-0 necessary
+    chemical we report:
+      * producer_rxns_in_cascade — # cascade reactions that list it as a
+        product. (Inflated by cofactor byproducts; not bounded by the cap.)
+      * producer_rxns_in_hypergraph — # candidate producers globally.
     """
     necessary: set[Chemical] = {cascade.target}
     for rxn in cascade.reactions:
         necessary.update(rxn.substrates)
 
-    in_count: dict[Chemical, int] = {c: 0 for c in necessary}
-    out_count: dict[Chemical, int] = {c: 0 for c in necessary}
+    shell_histogram = Counter(hg.chemical_to_shell[c] for c in necessary)
+
+    in_cascade_producers: dict[int, int] = defaultdict(int)
     for rxn in cascade.reactions:
         for p in rxn.products:
             if p in necessary:
-                in_count[p] += 1
-        for s in rxn.substrates:
-            out_count[s] += 1
+                in_cascade_producers[p.id] += 1
 
-    max_in_chem = max(in_count, key=lambda c: (in_count[c], -c.id))
-    max_out_chem = max(out_count, key=lambda c: (out_count[c], -c.id))
+    deep_chemicals = [c for c in necessary if hg.chemical_to_shell[c] > 0]
+    rows = [
+        {
+            "chemical_id": c.id,
+            "chemical_name": c.name,
+            "shell": hg.chemical_to_shell[c],
+            "producer_rxns_in_cascade": in_cascade_producers.get(c.id, 0),
+            "producer_rxns_in_hypergraph": len(global_producers.get(c.id, [])),
+        }
+        for c in deep_chemicals
+    ]
+    rows.sort(
+        key=lambda r: (
+            -r["producer_rxns_in_cascade"],
+            -r["producer_rxns_in_hypergraph"],
+            r["chemical_id"],
+        )
+    )
+
+    branching = Counter(
+        sum(1 for s in rxn.substrates if hg.chemical_to_shell[s] > 0)
+        for rxn in cascade.reactions
+    )
+
     return {
-        "n_chemicals": len(necessary),
-        "max_in_count": in_count[max_in_chem],
-        "max_in_chemical_id": max_in_chem.id,
-        "max_in_chemical_name": max_in_chem.name,
-        "max_out_count": out_count[max_out_chem],
-        "max_out_chemical_id": max_out_chem.id,
-        "max_out_chemical_name": max_out_chem.name,
+        "n_reactions": len(cascade.reactions),
+        "n_necessary_chemicals": len(necessary),
+        "n_necessary_non_shell_0": len(deep_chemicals),
+        "necessary_chemicals_by_shell": dict(sorted(shell_histogram.items())),
+        "reactions_by_n_non_shell_0_substrates": dict(sorted(branching.items())),
+        "reactions_per_non_shell_0_chemical": (
+            len(cascade.reactions) / len(deep_chemicals) if deep_chemicals else 0.0
+        ),
+        "top_chemicals": rows[:top_n],
     }
 
 
 def evaluate_target(
     hg: HyperGraph,
     target: Chemical,
+    global_producers: dict[int, list[Reaction]],
     shell_cutoff: int,
     max_producers: int | None,
 ) -> dict:
-    """Run traceback on a single target and record cascade-shape metrics."""
+    """Run traceback on a single target and record cascade diagnostics."""
     t0 = time.perf_counter()
     cascade = traceback(
         hg,
@@ -159,15 +199,53 @@ def evaluate_target(
     )
     t_cascade = time.perf_counter() - t0
 
-    shape = cascade_shape(cascade)
+    diag = target_diagnostics(hg, cascade, global_producers)
     return {
         "chemical_id": target.id,
         "chemical_name": target.name,
         "target_shell": hg.chemical_to_shell[target],
-        "n_reactions": len(cascade.reactions),
         "cascade_seconds": t_cascade,
-        **shape,
+        **diag,
     }
+
+
+def print_target_report(target: Chemical, target_shell: int, r: dict) -> None:
+    """Mirror scripts/debug_blowup.py's per-target printout."""
+    print(
+        f"\n  TARGET: {target.name} (id={target.id}, shell={target_shell})"
+    )
+    print(f"    cascade: {r['n_reactions']} reactions")
+    print(
+        f"    necessary chemicals: {r['n_necessary_chemicals']}, "
+        f"by shell: {r['necessary_chemicals_by_shell']}"
+    )
+    print(
+        f"    non-shell-0 necessary chemicals: "
+        f"{r['n_necessary_non_shell_0']} / {r['n_necessary_chemicals']}"
+    )
+    print(
+        f"    reactions per non-shell-0 chemical: "
+        f"{r['reactions_per_non_shell_0_chemical']:.2f}"
+    )
+    print(
+        f"    reactions by # non-shell-0 substrates: "
+        f"{r['reactions_by_n_non_shell_0_substrates']}"
+    )
+    if r["top_chemicals"]:
+        print(
+            f"    top {len(r['top_chemicals'])} non-shell-0 necessary "
+            f"chemicals by producer reactions in cascade:"
+        )
+        print(
+            f"      {'in_cascade':>10} {'available':>10}  shell  name (id)"
+        )
+        for row in r["top_chemicals"]:
+            print(
+                f"      {row['producer_rxns_in_cascade']:>10} "
+                f"{row['producer_rxns_in_hypergraph']:>10}  "
+                f"{row['shell']:>5}  {row['chemical_name'][:50]} "
+                f"(id={row['chemical_id']})"
+            )
 
 
 def aggregate(target_results: list[dict]) -> dict:
@@ -175,17 +253,17 @@ def aggregate(target_results: list[dict]) -> dict:
     if not target_results:
         return {"count": 0}
     n_rxns = [r["n_reactions"] for r in target_results]
-    n_chems = [r["n_chemicals"] for r in target_results]
-    max_ins = [r["max_in_count"] for r in target_results]
-    max_outs = [r["max_out_count"] for r in target_results]
+    n_chems = [r["n_necessary_chemicals"] for r in target_results]
+    n_deep = [r["n_necessary_non_shell_0"] for r in target_results]
     return {
         "count": len(target_results),
         "mean_n_reactions": statistics.mean(n_rxns),
         "median_n_reactions": statistics.median(n_rxns),
-        "mean_n_chemicals": statistics.mean(n_chems),
-        "median_n_chemicals": statistics.median(n_chems),
-        "max_in_count_overall": max(max_ins),
-        "max_out_count_overall": max(max_outs),
+        "max_n_reactions": max(n_rxns),
+        "mean_n_necessary_chemicals": statistics.mean(n_chems),
+        "median_n_necessary_chemicals": statistics.median(n_chems),
+        "mean_n_necessary_non_shell_0": statistics.mean(n_deep),
+        "max_n_necessary_non_shell_0": max(n_deep),
     }
 
 
@@ -217,6 +295,7 @@ def main() -> None:
     caps = list(CAP_SWEEP)
 
     hg, chemicals = build_hypergraph()
+    global_producers = build_global_producers(hg)
 
     if args.max_cutoff is None:
         max_shell = max(hg.chemical_to_shell.values(), default=0)
@@ -264,14 +343,15 @@ def main() -> None:
             for shell, chems in sorted(sampled.items()):
                 target_results = []
                 for chem in chems:
-                    r = evaluate_target(hg, chem, shell_cutoff=n, max_producers=cap)
-                    target_results.append(r)
-                    print(
-                        f"  shell {shell} [{chem.name[:40]:40}] "
-                        f"rxns={r['n_reactions']:5d} chems={r['n_chemicals']:5d} "
-                        f"max_in={r['max_in_count']} (id={r['max_in_chemical_id']}) "
-                        f"max_out={r['max_out_count']} (id={r['max_out_chemical_id']})"
+                    r = evaluate_target(
+                        hg,
+                        chem,
+                        global_producers,
+                        shell_cutoff=n,
+                        max_producers=cap,
                     )
+                    target_results.append(r)
+                    print_target_report(chem, shell, r)
                 per_shell[shell] = target_results
 
             results["sweep"][label][str(cap)] = {
