@@ -81,12 +81,15 @@ def test_traceback_shell_cutoff_one_recovers_full_cascade(small_cell, small_cell
     assert cascade.reactions == {r["R7"], r["R6"], r["R4"], r["R3"], r["R5"]}
 
 
-def test_traceback_default_is_minus_one(small_cell, small_cell_hg):
-    """The default shell_cutoff is the tightest prune (-1)."""
+def test_traceback_default_is_unlimited(small_cell, small_cell_hg):
+    """The default shell_cutoff is None (unlimited — no shell-based pruning)."""
     c = small_cell.chems
     default_cascade = traceback(small_cell_hg, c["T"])
-    explicit = traceback(small_cell_hg, c["T"], shell_cutoff=-1)
+    explicit = traceback(small_cell_hg, c["T"], shell_cutoff=None)
     assert default_cascade.reactions == explicit.reactions
+    # And unlimited admits at least as many reactions as the tightest prune.
+    pruned = traceback(small_cell_hg, c["T"], shell_cutoff=-1)
+    assert pruned.reactions <= default_cascade.reactions
 
 
 def test_traceback_shell_cutoff_below_minus_one_raises(small_cell, small_cell_hg):

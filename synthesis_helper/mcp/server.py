@@ -142,7 +142,7 @@ def list_reachables(
 @mcp.tool()
 def get_cascade(
     chemical_ref: str | int,
-    shell_cutoff: int = -1,
+    shell_cutoff: int | None = None,
 ) -> dict[str, Any]:
     """Build the full cascade (all reactions reaching a target) from the baseline hypergraph.
 
@@ -151,11 +151,12 @@ def get_cascade(
     reaction list, all metabolites touched, and the subset of leaf (shell-0)
     metabolites.
 
-    *shell_cutoff* (n >= -1) controls which producing reactions enter the
-    cascade: a reaction is admitted only if all its substrates lie in
-    shell <= (chemical's shell + n). n=-1 (default) is the tightest prune
-    and keeps only producers whose substrates are strictly closer to
-    shell 0 than the chemical itself; raise n to admit more branches.
+    *shell_cutoff* controls which producing reactions enter the cascade.
+    The default ``None`` disables pruning: every producing reaction is
+    admitted. Pass an integer ``n >= -1`` to admit a reaction only if all
+    its substrates lie in shell <= (chemical's shell + n); ``n = -1`` is
+    the tightest prune and keeps only producers whose substrates are
+    strictly closer to shell 0 than the chemical itself.
     """
     hg = state.get_hypergraph()
     chem = _resolve_or_raise(chemical_ref)
@@ -171,7 +172,7 @@ def get_cascade(
 def enumerate_pathways_for(
     chemical_ref: str | int,
     max_pathways: int = 10,
-    shell_cutoff: int = -1,
+    shell_cutoff: int | None = None,
 ) -> list[dict[str, Any]]:
     """Return up to *max_pathways* individual routes from native metabolites to target.
 
@@ -194,7 +195,7 @@ def enumerate_pathways_for(
 def describe_pathway(
     chemical_ref: str | int,
     pathway_index: int,
-    shell_cutoff: int = -1,
+    shell_cutoff: int | None = None,
 ) -> str:
     """Render a human-readable Markdown trace of a single pathway.
 
@@ -234,7 +235,7 @@ def describe_pathway(
 def pathway_to_composition(
     chemical_ref: str | int,
     pathway_index: int = 0,
-    shell_cutoff: int = -1,
+    shell_cutoff: int | None = None,
 ) -> dict[str, Any]:
     """**Machine-readable enzyme list for ONE pathway, with engineering flags.**
     Call this whenever the user asks for the enzyme list, composition, "which
@@ -287,7 +288,7 @@ def pathway_to_composition(
 def compare_pathways(
     chemical_ref: str | int,
     n: int = 5,
-    shell_cutoff: int = -1,
+    shell_cutoff: int | None = None,
 ) -> dict[str, Any]:
     """**Multi-dimensional scorecard across up to N pathways to one target.**
     Call this whenever the user asks to compare, rank, triage, or pick between
@@ -511,7 +512,7 @@ def _viewer_result(
 def open_pathway_interactive(
     chemical_ref: str | int,
     pathway_index: int = 0,
-    shell_cutoff: int = -1,
+    shell_cutoff: int | None = None,
 ) -> dict[str, Any]:
     """**THE visualization tool for a single pathway.** Call this whenever the
     user asks to see, draw, view, graph, diagram, or visualize one pathway to
@@ -588,7 +589,7 @@ def open_pathway_interactive(
 @mcp.tool()
 def open_cascade_interactive(
     chemical_ref: str | int,
-    shell_cutoff: int = -1,
+    shell_cutoff: int | None = None,
     max_reactions: int = 200,
 ) -> dict[str, Any]:
     """**THE visualization tool for a full cascade / producer tree.** Call this
@@ -613,7 +614,8 @@ def open_cascade_interactive(
     group-by themes are {shell, ec_class, role, producer_depth}.
 
     Large cascades can be unwieldy — if the target has many producer
-    reactions, lower ``shell_cutoff`` (toward -1) first. ``max_reactions``
+    reactions, set ``shell_cutoff`` to an integer (default ``None`` is
+    unlimited; lower toward ``-1`` to prune harder). ``max_reactions``
     is a safety ceiling (default 200); the call raises if the cascade
     exceeds it so the browser doesn't choke on a thousand-node graph.
 

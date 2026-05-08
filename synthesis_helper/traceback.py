@@ -8,7 +8,7 @@ from synthesis_helper.models import Cascade, Chemical, HyperGraph, Reaction
 def traceback(
     hypergraph: HyperGraph,
     target: Chemical,
-    shell_cutoff: int = -1,
+    shell_cutoff: int | None = None,
 ) -> Cascade:
     """Walk backward from target to native metabolites, building a Cascade.
 
@@ -19,9 +19,11 @@ def traceback(
     of its substrates lies in shell <= (chemical's shell + n). Tighter
     values prune more aggressively: n=-1 keeps only producers whose
     substrates are all strictly closer to shell 0 than the chemical itself.
+    Pass ``None`` (the default) to disable the cutoff entirely — every
+    producing reaction is admitted regardless of substrate shell.
     """
-    if shell_cutoff < -1:
-        raise ValueError(f"shell_cutoff must be >= -1, got {shell_cutoff}")
+    if shell_cutoff is not None and shell_cutoff < -1:
+        raise ValueError(f"shell_cutoff must be >= -1 or None, got {shell_cutoff}")
     if target not in hypergraph.chemical_to_shell:
         raise ValueError(f"Chemical {target.name!r} (id={target.id}) is not reachable.")
 
@@ -56,7 +58,7 @@ def _collect_reactions(
     chemical: Chemical,
     cascade: Cascade,
     producers_index: dict[int, list[Reaction]],
-    shell_cutoff: int,
+    shell_cutoff: int | None,
     visited_rxns: set[int],
     visited_chems: set[int],
 ) -> None:
@@ -68,13 +70,18 @@ def _collect_reactions(
         return  # break cycles in the reaction graph
     visited_chems.add(chemical.id)
 
-    chem_shell = hg.chemical_to_shell[chemical]
-    threshold = chem_shell + shell_cutoff
+    threshold: int | None
+    if shell_cutoff is None:
+        threshold = None
+    else:
+        threshold = hg.chemical_to_shell[chemical] + shell_cutoff
 
     for rxn in producers_index.get(chemical.id, ()):
         if rxn.id in visited_rxns:
             continue
-        if any(hg.chemical_to_shell[s] > threshold for s in rxn.substrates):
+        if threshold is not None and any(
+            hg.chemical_to_shell[s] > threshold for s in rxn.substrates
+        ):
             continue
         visited_rxns.add(rxn.id)
         cascade.reactions.add(rxn)
