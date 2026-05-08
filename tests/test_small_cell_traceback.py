@@ -97,3 +97,51 @@ def test_traceback_shell_cutoff_below_minus_one_raises(small_cell, small_cell_hg
     c = small_cell.chems
     with pytest.raises(ValueError):
         traceback(small_cell_hg, c["T"], shell_cutoff=-2)
+
+
+def test_traceback_max_producers_keeps_lowest_shell_first(small_cell, small_cell_hg):
+    """T has two producers: R7 (shell 1) and R6 (shell 3). With shell_cutoff
+       wide enough to admit both, max_producers_per_chemical=1 should keep
+       only the lower-shell producer (R7).
+    """
+    c = small_cell.chems
+    r = small_cell.rxns
+    cascade = traceback(
+        small_cell_hg,
+        c["T"],
+        shell_cutoff=2,
+        max_producers_per_chemical=1,
+    )
+    assert cascade.reactions == {r["R7"]}
+
+
+def test_traceback_max_producers_filter_then_cap(small_cell, small_cell_hg):
+    """The cap applies AFTER the shell filter — shell_cutoff=-1 already
+       drops R6, so the cap has nothing to slice.
+    """
+    c = small_cell.chems
+    r = small_cell.rxns
+    cascade = traceback(
+        small_cell_hg,
+        c["T"],
+        shell_cutoff=-1,
+        max_producers_per_chemical=10,
+    )
+    assert cascade.reactions == {r["R7"]}
+
+
+def test_traceback_max_producers_none_disables_cap(small_cell, small_cell_hg):
+    """Explicit None for the cap matches the cap-absent behavior."""
+    c = small_cell.chems
+    capped = traceback(
+        small_cell_hg, c["T"], shell_cutoff=2, max_producers_per_chemical=None
+    )
+    uncapped = traceback(small_cell_hg, c["T"], shell_cutoff=2)
+    assert capped.reactions == uncapped.reactions
+
+
+def test_traceback_max_producers_zero_raises(small_cell, small_cell_hg):
+    """max_producers_per_chemical must be None or >= 1."""
+    c = small_cell.chems
+    with pytest.raises(ValueError):
+        traceback(small_cell_hg, c["T"], max_producers_per_chemical=0)

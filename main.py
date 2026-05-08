@@ -70,7 +70,7 @@ def main() -> None:
         print(
             f"\nTraceback for {target.name} (shell {hg.chemical_to_shell.get(target)}):"
         )
-        cascade = traceback(hg, target)
+        cascade = traceback(hg, target, max_producers_per_chemical=25)
         print(f"  Cascade contains {len(cascade.reactions)} reactions")
         pathways = enumerate_pathways(cascade, hg)
         print(f"  Found {len(pathways)} pathways")
