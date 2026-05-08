@@ -1,21 +1,21 @@
-"""Evaluate the shell-cutoff approach across a sweep of cutoff values.
+"""Evaluate the enzymemap-shell0 approach (single run, unlimited cutoff).
 
-Builds the hypergraph once, samples 5 reachables per shell (seeded), then for
-each n in [-1, max_cutoff] runs traceback + enumerate_pathways on every
-sampled target and records per-shell metrics. Also renders one shell-1 and
-one shell-2 target's cascade as a nested dict for manual inspection.
+Builds the hypergraph via the two-pass BFS from main.py (E. coli reactions
+seed shell 0; full EnzymeMap expansion runs from there), samples reachables
+per shell, then runs traceback + enumerate_pathways on every sampled target
+with shell_cutoff left unlimited. Also renders one shell-1 and one shell-2
+target's cascade as a nested dict for manual inspection.
 
 Usage:
-    python scripts/evaluate.py --max-cutoff 2
+    python scripts/evaluate.py
 """
 
 from __future__ import annotations
 
-import argparse
 import json
-import random
 import statistics
 import time
+import random
 from collections import defaultdict
 from pathlib import Path
 
@@ -24,6 +24,7 @@ from synthesis_helper.models import Cascade, Chemical, HyperGraph, Pathway, Reac
 from synthesis_helper.parser import (
     parse_chemicals,
     parse_metabolite_list,
+    parse_reaction_organisms,
     parse_reactions,
 )
 from synthesis_helper.pathways import enumerate_pathways
@@ -36,23 +37,36 @@ RESULTS_DIR = REPO_ROOT / "eval_results"
 SEED = 20260507
 SAMPLES_PER_SHELL = 1
 MAX_PATHWAYS = 100_000
+ECOLI_TOKEN = "escherichia coli"
 
 
 def build_hypergraph() -> tuple[HyperGraph, dict[int, Chemical]]:
-    chemicals = parse_chemicals(DATA_DIR / "good_chems.txt")
-    reactions = parse_reactions(DATA_DIR / "good_reactions.txt", chemicals)
+    chemicals = parse_chemicals(DATA_DIR / "enzymemap_chems.tsv")
+    reactions = parse_reactions(DATA_DIR / "enzymemap_reactions.tsv", chemicals)
+    rxn_orgs = parse_reaction_organisms(
+        DATA_DIR / "enzymemap_reaction_organisms.tsv"
+    )
     native = parse_metabolite_list(DATA_DIR / "minimal_metabolites.txt", chemicals)
     universal = parse_metabolite_list(
         DATA_DIR / "ubiquitous_metabolites.txt", chemicals
     )
     print(f"Loaded {len(chemicals)} chemicals, {len(reactions)} reactions")
     print(f"Native: {len(native)}, Universal: {len(universal)}")
-    hg = synthesize(reactions, native, universal, verbose=True)
+
+    ecoli_reactions = [
+        r for r in reactions
+        if any(ECOLI_TOKEN in o.lower() for o in rxn_orgs.get(r.id, ()))
+    ]
+    print(f"Pass 1 — E. coli reactions: {len(ecoli_reactions)}")
+    hg_seed = synthesize(ecoli_reactions, native, universal, verbose=True)
+    seed = set(hg_seed.chemical_to_shell.keys())
+    print(f"Pass 2 — full EnzymeMap, shell 0 = {len(seed)} chemicals")
+    hg = synthesize(reactions, seed, set(), verbose=True)
     return hg, chemicals
 
 
 def sample_targets_per_shell(hg: HyperGraph) -> dict[int, list[Chemical]]:
-    """Group reachables by shell (excluding shell 0), sample 5 per shell."""
+    """Group reachables by shell (excluding shell 0), sample SAMPLES_PER_SHELL each."""
     by_shell: dict[int, list[Chemical]] = defaultdict(list)
     for chem, shell in hg.chemical_to_shell.items():
         if shell > 0:
@@ -68,12 +82,7 @@ def sample_targets_per_shell(hg: HyperGraph) -> dict[int, list[Chemical]]:
 
 
 def pathway_depth(pathway: Pathway, hg: HyperGraph) -> int:
-    """Longest chain from a shell-0 leaf to the target through this pathway.
-
-    `len(pathway.reactions)` counts every node in the pathway DAG (each
-    branch of a multi-substrate reaction adds nodes), so it overstates
-    "steps." Depth is what most people mean by pathway length.
-    """
+    """Longest chain from a shell-0 leaf to the target through this pathway."""
     producers_in_pathway: dict[int, list[Reaction]] = {}
     for rxn in pathway.reactions:
         for prod in rxn.products:
@@ -89,8 +98,7 @@ def pathway_depth(pathway: Pathway, hg: HyperGraph) -> int:
         for s in rxn.substrates:
             if hg.chemical_to_shell.get(s) == 0:
                 continue
-            sub_rxns = producers_in_pathway.get(s.id, [])
-            for sr in sub_rxns:
+            for sr in producers_in_pathway.get(s.id, []):
                 d = depth_of_rxn(sr)
                 if d > max_sub:
                     max_sub = d
@@ -103,10 +111,10 @@ def pathway_depth(pathway: Pathway, hg: HyperGraph) -> int:
     return max(depth_of_rxn(r) for r in target_rxns)
 
 
-def evaluate_target(hg: HyperGraph, target: Chemical, shell_cutoff: int) -> dict:
-    """Run traceback + pathway enumeration on a single target."""
+def evaluate_target(hg: HyperGraph, target: Chemical) -> dict:
+    """Run traceback (unlimited cutoff) + pathway enumeration on a single target."""
     t0 = time.perf_counter()
-    cascade = traceback(hg, target, shell_cutoff=shell_cutoff)
+    cascade = traceback(hg, target)
     t_cascade = time.perf_counter() - t0
 
     t0 = time.perf_counter()
@@ -140,13 +148,11 @@ def aggregate(target_results: list[dict]) -> dict:
     n_rxns = [r["n_reactions"] for r in target_results]
     n_paths = [r["n_pathways"] for r in target_results]
     mean_depths = [
-        r["mean_pathway_depth"]
-        for r in target_results
+        r["mean_pathway_depth"] for r in target_results
         if r["mean_pathway_depth"] is not None
     ]
     max_depths = [
-        r["max_pathway_depth"]
-        for r in target_results
+        r["max_pathway_depth"] for r in target_results
         if r["max_pathway_depth"] is not None
     ]
     coverage = sum(1 for r in target_results if r["n_pathways"] > 0)
@@ -166,15 +172,8 @@ def aggregate(target_results: list[dict]) -> dict:
     }
 
 
-def render_cascade_nested(
-    hg: HyperGraph,
-    cascade: Cascade,
-) -> dict:
-    """Render a cascade as a nested dict for human inspection.
-
-    Cycles are broken: a chemical already expanded higher in the current
-    branch is rendered as the string "<seen above>".
-    """
+def render_cascade_nested(hg: HyperGraph, cascade: Cascade) -> dict:
+    """Render a cascade as a nested dict for human inspection. Cycles → '<seen above>'."""
     producers: dict[int, list[Reaction]] = {}
     for rxn in cascade.reactions:
         for prod in rxn.products:
@@ -196,8 +195,7 @@ def render_cascade_nested(
             return "<no producer in cascade>"
         in_path = in_path | {chem.id}
         return {
-            f"rxn {r.id}"
-            + (f" (EC {r.ecnum})" if r.ecnum else ""): {
+            f"rxn {r.id}" + (f" (EC {r.ecnum})" if r.ecnum else ""): {
                 chem_label(s): expand_chem(s, in_path)
                 for s in sorted(r.substrates, key=lambda x: x.id)
             }
@@ -223,28 +221,13 @@ def render_cascade_indented(nested: dict, indent: int = 0) -> str:
 def pick_inspection_target(
     sampled: dict[int, list[Chemical]], shell: int
 ) -> Chemical | None:
-    """Pick a deterministic target from the sample for manual inspection."""
     if shell not in sampled or not sampled[shell]:
         return None
     return sorted(sampled[shell], key=lambda c: c.id)[0]
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument(
-        "--max-cutoff",
-        type=int,
-        default=2,
-        help="Sweep shell_cutoff from -1 up to this value (inclusive).",
-    )
-    args = ap.parse_args()
-
-    if args.max_cutoff < -1:
-        ap.error("--max-cutoff must be >= -1")
-
     RESULTS_DIR.mkdir(exist_ok=True)
-    cutoffs = list(range(-1, args.max_cutoff + 1))
-    print(f"Sweeping shell_cutoff over: {cutoffs}")
 
     hg, _ = build_hypergraph()
 
@@ -256,8 +239,22 @@ def main() -> None:
     inspection_shell1 = pick_inspection_target(sampled, 1)
     inspection_shell2 = pick_inspection_target(sampled, 2)
 
+    per_shell: dict[int, list[dict]] = {}
+    for shell, chems in sorted(sampled.items()):
+        target_results = []
+        for chem in chems:
+            r = evaluate_target(hg, chem)
+            target_results.append(r)
+            print(
+                f"  shell {shell} [{chem.name[:40]:40}] "
+                f"rxns={r['n_reactions']:5d} paths={r['n_pathways']:6d} "
+                f"depth(mean/max)={r['mean_pathway_depth']}/{r['max_pathway_depth']}"
+            )
+        per_shell[shell] = target_results
+
     results: dict = {
-        "approach": "shell-cutoff",
+        "approach": "enzymemap-shell0",
+        "shell_cutoff": "unlimited",
         "seed": SEED,
         "samples_per_shell": SAMPLES_PER_SHELL,
         "max_shell": max(sampled) if sampled else 0,
@@ -265,61 +262,40 @@ def main() -> None:
             str(shell): [{"id": c.id, "name": c.name} for c in chems]
             for shell, chems in sampled.items()
         },
-        "sweep": {},
+        "per_shell": {
+            str(shell): {
+                "targets": tr,
+                "summary": aggregate(tr),
+            }
+            for shell, tr in per_shell.items()
+        },
+        "overall": aggregate([r for tr in per_shell.values() for r in tr]),
     }
 
     inspection_lines: list[str] = []
+    for label, target in (
+        ("shell-1", inspection_shell1),
+        ("shell-2", inspection_shell2),
+    ):
+        if target is None:
+            continue
+        cascade = traceback(hg, target)
+        nested = render_cascade_nested(hg, cascade)
+        inspection_lines.append(
+            f"\n{'=' * 70}\n"
+            f"inspection target = {label}\n"
+            f"  {target.name} (id={target.id}, "
+            f"shell={hg.chemical_to_shell[target]})\n"
+            f"  {len(cascade.reactions)} reactions in cascade\n"
+            f"{'=' * 70}\n"
+        )
+        inspection_lines.append(render_cascade_indented(nested))
+        inspection_lines.append("")
+        inspection_lines.append("--- nested dict ---")
+        inspection_lines.append(json.dumps(nested, indent=2))
 
-    for n in cutoffs:
-        print(f"\n=== shell_cutoff = {n} ===")
-        per_shell: dict[int, list[dict]] = {}
-        for shell, chems in sorted(sampled.items()):
-            target_results = []
-            for chem in chems:
-                r = evaluate_target(hg, chem, shell_cutoff=n)
-                target_results.append(r)
-                print(
-                    f"  shell {shell} [{chem.name[:40]:40}] "
-                    f"rxns={r['n_reactions']:5d} paths={r['n_pathways']:6d} "
-                    f"depth(mean/max)={r['mean_pathway_depth']}/{r['max_pathway_depth']}"
-                )
-            per_shell[shell] = target_results
-
-        results["sweep"][str(n)] = {
-            "per_shell": {
-                str(shell): {
-                    "targets": tr,
-                    "summary": aggregate(tr),
-                }
-                for shell, tr in per_shell.items()
-            },
-            "overall": aggregate([r for tr in per_shell.values() for r in tr]),
-        }
-
-        # Inspection cascades for shell 1 + shell 2.
-        for label, target in (
-            ("shell-1", inspection_shell1),
-            ("shell-2", inspection_shell2),
-        ):
-            if target is None:
-                continue
-            cascade = traceback(hg, target, shell_cutoff=n)
-            nested = render_cascade_nested(hg, cascade)
-            inspection_lines.append(
-                f"\n{'=' * 70}\n"
-                f"shell_cutoff = {n}, inspection target = {label}\n"
-                f"  {target.name} (id={target.id}, "
-                f"shell={hg.chemical_to_shell[target]})\n"
-                f"  {len(cascade.reactions)} reactions in cascade\n"
-                f"{'=' * 70}\n"
-            )
-            inspection_lines.append(render_cascade_indented(nested))
-            inspection_lines.append("")
-            inspection_lines.append("--- nested dict ---")
-            inspection_lines.append(json.dumps(nested, indent=2))
-
-    json_path = RESULTS_DIR / "shell-cutoff.json"
-    text_path = RESULTS_DIR / "shell-cutoff_inspection.txt"
+    json_path = RESULTS_DIR / "enzymemap-shell0.json"
+    text_path = RESULTS_DIR / "enzymemap-shell0_inspection.txt"
     json_path.write_text(json.dumps(results, indent=2))
     text_path.write_text("\n".join(inspection_lines))
     print(f"\nWrote {json_path}")
