@@ -351,16 +351,6 @@ purpose).
 ## 3. Cascade explosion: tuning vs. seeding
 *Author: Jonathan Arnold*
 
-The algorithmic layer that section 1 wraps as MCP tools is three
-modules: BFS waveform expansion (`synthesis_helper/synthesize.py`)
-turns a reaction corpus into a hypergraph keyed by minimum shell
-distance from native metabolites; cascade traceback
-(`synthesis_helper/traceback.py`) walks backward from a reachable
-target and collects every reaction that transitively produces it;
-pathway enumeration (`synthesis_helper/pathways.py`) flattens that
-cascade into individual linear routes via choice-function search over
-the producer tree.
-
 I analyze two approaches to managing cofactor cascade snowballs, using 
 a shell cutoff/max producer limit and using enzymemap data to create a 
 shell zero built from ecoli native reactions. I implemented both as 
@@ -593,6 +583,20 @@ safe if a downstream analysis cares about stereo. The shell-cutoff
 cap≥10 plateau equals "most of the reachable hypergraph minus shell 0"
 once a cofactor is admitted; the numbers are real but should not be
 read as the inherent complexity of the individual targets.
+
+### 3.8 Contributions
+
+In addition to the cascade-explosion analysis above, my contributions
+to this project include the algorithmic core that section 1 wraps as
+MCP tools. Three modules on `main` form the pipeline from a reaction
+corpus to fully enumerated pathways: BFS waveform expansion
+(`synthesis_helper/synthesize.py`) builds a hypergraph keyed by
+minimum shell distance from native metabolites; cascade traceback
+(`synthesis_helper/traceback.py`) walks backward from a reachable
+target and collects every reaction that transitively produces it; and
+pathway enumeration (`synthesis_helper/pathways.py`) flattens the
+resulting cascade into individual linear routes via choice-function
+search over the producer tree.
 
 ---
 
