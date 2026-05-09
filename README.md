@@ -367,7 +367,7 @@ clean alternatives on their own branches.
   expansion seeded from that result. Cofactors fall into shell 0 by
   construction, so traceback never recurses on them. The change spans
   `synthesize.py`, `parser.py`, and the corpus loader.
-- **partial-reactions** (`` branch) - this is owned and analyzed below by Cael.
+- **cofactor-suppression** (`claude/sleepy-hermann-aaa57e` branch) — keep the MetaCyc corpus; add composable `SubstrateFilter` callbacks to `traceback()` that suppress cofactor substrates at the reaction level. See §4.
 
 ### 3.1 How the comparison was set up
 
@@ -597,6 +597,257 @@ target and collects every reaction that transitively produces it; and
 pathway enumeration (`synthesis_helper/pathways.py`) flattens the
 resulting cascade into individual linear routes via choice-function
 search over the producer tree.
+
+---
+
+## 4. Cofactor suppression in cascades
+*Author: Cael Magner*
+
+Cascades returned by `traceback()` include every reaction transitively
+required to produce the target. That is correct for the algorithm, but
+visually confusing: reactions that consume NADPH, FAD, or phosphate show
+those cofactors as substrates that also "need to be produced," even though
+the cell already has them. This section documents three proposed approaches
+to suppressing cofactors in cascades, what we implemented, and what the
+data showed.
+
+### 4.1 The proposals
+
+Three distinct strategies came out of design discussion:
+
+**Approach A — E. coli metabolism as shell 0.**
+Expand the universal metabolite set by running a BFS on known E. coli
+reactions (e.g. from [EnzymeMap](https://github.com/hesther/enzymemap))
+before the main expansion, so everything the cell already makes natively
+starts at shell 0.
+`bootstrap_ecoli_shell0.py` implements this. The blocking problem is data
+equivalency: EnzymeMap and MetaCyc use different InChI forms for the same
+molecules (different protonation states, oxidation states, stereo encodings),
+so many chemicals that should match do not.
+
+**Approach B — Shell-number heuristic.**
+Treat any substrate at shell ≤ k as background and stop recursing there.
+The intuition is that real chemists never synthesize a pathway and also plan
+to re-synthesize every electron carrier from glucose. A shell threshold
+captures this: cofactors are almost always reachable in very few steps
+(they are highly connected), while true precursors track closer to the
+target's own shell.
+
+**Approach C — Atom-mapping (Evodex / SMARTS).**
+Tag the heavy atoms in each reaction's SMARTS. A substrate whose atoms do
+not end up in the product skeleton (they are merely transferred to a carrier)
+is a cofactor by definition and can be dropped. This is the most principled
+approach but requires atom-mapped reaction data (e.g. from
+[Evodex](https://github.com/hesther/evodex)) and RDKit reaction processing —
+neither of which is currently in the corpus. See §4.5.
+
+### 4.2 Implementation: composable `SubstrateFilter`
+
+All three approaches answer the same question at the reaction level:
+*given a reaction and the hypergraph, which of its substrates should
+`traceback()` recurse into?*
+
+That maps directly to a single composable type in
+`synthesis_helper/filters.py`:
+
+```python
+SubstrateFilter = Callable[[Reaction, HyperGraph], frozenset[Chemical]]
+```
+
+Five concrete filters are provided:
+
+| Filter | What it suppresses |
+|---|---|
+| `shell_zero_filter` | Substrates already in shell 0 (baseline — existing behaviour). |
+| `shell_threshold_filter(k)` | Substrates at shell ≤ k. |
+| `inchi_normalized_filter(universal)` | Substrates whose InChI matches a universal metabolite after stripping the `/p` (proton) and `/q` (charge) layers. |
+| `rhea_atom_filter(carrier_map)` | Substrates identified as carriers (cofactors, electron donors, group donors) by the Rhea reaction chemistry pipeline. Falls back to `shell_zero_filter` for reactions not in the map. |
+| `compose(*filters)` | Intersection of any number of filters — a substrate must survive all of them. |
+
+`traceback()` accepts an optional `substrate_filter` argument; passing
+`None` (the default) restores the original `shell_zero_filter` behaviour,
+so no existing code breaks.
+
+```python
+from synthesis_helper import traceback, compose, shell_threshold_filter, inchi_normalized_filter
+
+# Baseline
+cascade_default = traceback(hg, target)
+
+# Suppress substrates at shell ≤ 1
+cascade_thresh = traceback(hg, target, substrate_filter=shell_threshold_filter(1))
+
+# Suppress substrates that fuzzy-match a known cofactor
+cascade_inchi  = traceback(hg, target, substrate_filter=inchi_normalized_filter(universal))
+
+# Both together
+cascade_both   = traceback(hg, target,
+                           substrate_filter=compose(inchi_normalized_filter(universal),
+                                                    shell_threshold_filter(1)))
+```
+
+### 4.3 Experiment A — cascade-size comparison across filters
+
+`scripts/compare_filters.py` samples target chemicals from shells 2–8 and
+prints a TSV of cascade sizes and drop counts for all five filter variants.
+
+```bash
+uv run python scripts/compare_filters.py --data-dir data --per-shell 5
+```
+
+Key findings from a shell-2–5 sample (3 targets per shell,
+`max_producers=10`):
+
+| Filter | Typical cascade size | Notes |
+|---|---|---|
+| `baseline` (`shell_zero`) | ~4 000–4 300 reactions | Nearly every target traces back through the full hypergraph. |
+| `inchi_normalized` | ~4 235–4 260 reactions | Consistently drops **~16 reactions** across all targets. |
+| `thresh1` (k = 1) | **2–2 000 reactions** | Extremely sensitive to target shell; drops cleanly for low-shell targets, less so for mid-shell. |
+| `thresh2` (k = 2) | 1–275 reactions | Aggressive — clips real intermediates for targets above shell 3. |
+| `composed` (inchi + thresh1) | Matches `thresh1` | `thresh1` dominates; `inchi_norm` adds no further reduction once thresh1 is applied. |
+
+Two take-aways:
+
+1. **`inchi_normalized` is a conservative, targeted fix.** The consistent
+   ~16-reaction drop corresponds exactly to the cofactors recovered by the
+   InChI audit (§4.4). It does not over-prune.
+2. **`shell_threshold` is aggressive and needs calibration.** k = 1
+   collapses most cascades to a handful of reactions; k = 2 starts removing
+   genuine intermediates for mid-shell targets. The jump between k = 1 and
+   k = 2 is non-linear, which suggests the threshold is sensitive enough to
+   use only as an *optional display parameter* the user can tune — not as a
+   default.
+
+### 4.4 Experiment B — InChI mismatch audit
+
+`scripts/inchi_mismatch_audit.py` tries four progressively looser
+normalization strategies for each entry in `ubiquitous_metabolites.txt`
+against the 9 361 chemicals in `good_chems.txt`, and reports which entries
+are missed at each level.
+
+```bash
+uv run python scripts/inchi_mismatch_audit.py --data-dir data
+uv run python scripts/inchi_mismatch_audit.py --data-dir data --verbose  # per-entry detail
+```
+
+Results on the 89-entry universal list:
+
+| Strategy | New matches | Running total | Coverage |
+|---|---|---|---|
+| Exact InChI | 73 | 73 | 82.0% |
+| + strip `/p` (proton layer) | +9 | 82 | 92.1% |
+| + strip `/q` (charge layer) | +3 | 85 | 95.5% |
+| + strip stereo (`/t /m /s`) | +3 | 88 | 98.9% |
+| Name fallback | 0 | 88 | 98.9% |
+| **Completely unmatched** | **1** | — | — |
+
+The 9 chemicals recovered by stripping `/p` are the most consequential:
+**FAD, FADH2, NAD+, NADP+, carbonate, phosphate, sulfate, TPP**, and a
+second FAD form — exactly the cofactors most likely to pollute cascade
+displays. All of them appear in MetaCyc reactions with a different
+protonation layer than the entry in `ubiquitous_metabolites.txt`.
+
+The charge-layer step (+3) recovers metal ions (Mo, Ni in different
+oxidation states). The stereo step (+3) recovers SAM (two stereo encodings)
+and tetrahydrofolate. The one completely unmatched entry is **heme**, which
+has a blank InChI field in `ubiquitous_metabolites.txt` — no normalization
+strategy can match an absent string.
+
+This confirms that `inchi_normalized_filter` (which strips `/p` and `/q`)
+covers the highest-value equivalency mismatches with no ambiguity risk. The
+stereo layer is worth stripping too, but with the caveat that it produces
+multi-match results (up to 5 chemicals per entry for SAM), which means the
+filter marks more substrates as background than the strict version would.
+
+### 4.5 Experiment C — Rhea carrier-map filter
+
+`scripts/build_rhea_carrier_map.py` downloads two Rhea files from the ExPASy
+FTP (`rhea2ec.tsv` and `rhea-reaction-smiles.tsv`), matches MetaCyc reactions
+to Rhea reactions by EC number + substrate InChI Jaccard overlap (threshold
+≥ 0.3), then labels substrates as carriers using two rules:
+
+1. **Small-molecule rule.** Substrates with ≤ 4 heavy atoms (H₂O, H⁺, O₂,
+   CO₂, Pᵢ, PPᵢ, …) are always carriers regardless of context.
+2. **Tanimoto-pairing rule.** A substrate whose Morgan fingerprint (radius 2,
+   2048 bits) has Tanimoto similarity ≥ 0.7 with *any* product of the same
+   reaction is a carrier — this catches cofactor cycling pairs (NAD⁺→NADH,
+   FAD→FADH₂, ATP→ADP) whose atoms are returned to the pool rather than
+   incorporated into the product skeleton.
+
+```bash
+uv run python scripts/build_rhea_carrier_map.py --data-dir data
+```
+
+Output: `data/rhea_carrier_map.tsv` — 7 933 MetaCyc reactions matched;
+6 026 of those (76%) have at least one carrier identified.
+
+`scripts/rhea_filter_experiment.py` then measures the impact on cascade sizes
+across a stratified sample of targets, comparing `rhea_atom_filter`,
+`inchi_normalized_filter`, and their composition against the shell-zero
+baseline.
+
+```bash
+uv run python scripts/rhea_filter_experiment.py --data-dir data --per-shell 8 --max-shell 10
+```
+
+Results on 72 targets (shells 2–10, `max_producers=10`):
+
+| Filter | Total cascade reactions | Reduction |
+|---|---|---|
+| `baseline` (`shell_zero`) | 247 378 | — |
+| `rhea_atom_filter` | 244 923 | −2 455 (1.0%) |
+| `inchi_normalized_filter` | 246 450 | −928 (0.4%) |
+| `rhea_atom_filter` + `inchi_normalized_filter` | 243 995 | −3 383 (1.4%) |
+
+Three findings worth calling out:
+
+1. **The two filters are fully complementary.** For every large cascade, Rhea
+   drops exactly 43 reactions and `inchi_norm` drops exactly 16, with zero
+   overlap (43 + 16 = 59 every time). They are finding categorically different
+   cofactors: `inchi_norm` catches molecules whose protonation or charge state
+   differs from the universal list, while Rhea catches molecules that weren't
+   in that list at all but are structurally paired with a product.
+
+2. **The modest absolute reduction is expected.** The Rhea map covers **40.6%
+   of all reactions visited** in a typical baseline cascade, so the filter has
+   plenty of opportunity to act. The 1% reduction is small because most major
+   cofactors (NAD⁺, FAD, CoA, ATP) are already in shell 0 via
+   `ubiquitous_metabolites.txt` and need no further filtering. The 43
+   reactions that Rhea prunes are the subset of cascades where a carrier has
+   shell > 0 — real cofactors the universal list missed.
+
+3. **Rhea contributes 2.7× more than InChI normalization** in this category.
+   Together they constitute a complementary defense: normalization corrects
+   data-source encoding drift; Rhea detects carriers the curated list never
+   enumerated.
+
+### 4.6 Future work: Evodex / true atom-mapping
+
+`rhea_atom_filter` approximates atom tracking with Tanimoto similarity rather
+than actually following atoms through the reaction. This works well for
+cofactor cycling pairs (high self-similarity) but can miss group-transfer
+carriers where the donor and acceptor forms are structurally dissimilar. The
+fully principled approach would use atom-mapped reaction SMARTS — available
+from [Evodex](https://github.com/hesther/evodex) — where the carrier
+classification is exact: any substrate atom that does not appear in the
+product skeleton is definitionally transferred.
+
+Upgrading from Rhea to Evodex would require:
+
+1. **Atom-mapped reaction data.** The current `Reaction` model carries only
+   substrate/product sets and an EC number. Atom-mapping requires SMARTS
+   reaction strings with explicit atom tags — available from Evodex or from
+   the mapped reaction field in some MetaCyc exports, but not currently
+   loaded by the parser.
+2. **RDKit reaction processing.** Parsing a reaction SMARTS, applying it,
+   and reading which input atoms ended up in which output atoms requires
+   `rdkit.Chem.AllChem.ReactionFromSmarts` — already a dependency in
+   `scripts/build_rhea_carrier_map.py`, so the package constraint is met,
+   but the parser and `Reaction` model would need extension.
+3. **A new `SubstrateFilter` implementation.** The filter infrastructure is
+   already in place and the type signature is compatible. Once the atom-map
+   data is available, an Evodex filter slips in as one more callable without
+   touching `traceback()` or `pathways.py`.
 
 ---
 

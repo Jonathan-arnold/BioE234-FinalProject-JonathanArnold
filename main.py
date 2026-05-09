@@ -24,7 +24,7 @@ def main() -> None:
     reactions = parse_reactions(DATA_DIR / "good_reactions.txt", chemicals)
     native = parse_metabolite_list(DATA_DIR / "minimal_metabolites.txt", chemicals)
     universal = parse_metabolite_list(
-        DATA_DIR / "ecoli_reachables_shell0.txt", chemicals
+        DATA_DIR / "ubiquitous_metabolites.txt", chemicals
     )
 
     print(f"Loaded {len(chemicals)} chemicals, {len(reactions)} reactions")
