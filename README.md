@@ -15,6 +15,10 @@ a shell cutoff/max producer limit and using enzymemap data to create a
 shell zero built from ecoli native reactions. I implemented both as 
 clean alternatives on their own branches.
 
+The full scope of the group project included a third approach, using evodex
+data to build a hypergraph with partial reactions. This approach is not 
+covered in my report because Cael Magner owned that part of the project.
+
 - **shell-cutoff** (`shell-cutoff` branch) — keep the MetaCyc corpus;
   prune at every chemical during traceback. Two knobs in
   `synthesis_helper/traceback.py`: `shell_cutoff` (how much deeper than
@@ -26,7 +30,6 @@ clean alternatives on their own branches.
   expansion seeded from that result. Cofactors fall into shell 0 by
   construction, so traceback never recurses on them. The change spans
   `synthesize.py`, `parser.py`, and the corpus loader.
-- **cofactor-suppression** (`claude/sleepy-hermann-aaa57e` branch) — this is owned and analyzed below by Cael Magner.
 
 ### 1 How the comparison was set up
 
@@ -70,13 +73,7 @@ shell-cutoff:
 | shell-cutoff | none | 15 | 4003 | 5332 | 5337 | 952 |
 | enzymemap-shell0 | n/a | n/a | 649 | 851 | 952 | 227 |
 
-Two structural observations jump out before any per-target analysis:
-`shell_cutoff` is a far stronger knob than `max_producers_per_chemical`
-(cap=5 mean grows 11 → 56 → 651 across the three cutoffs), and the
-shell-cutoff cap=5 row at unlimited cutoff has a mean comparable to
-enzymemap-shell0 but a wildly different distribution.
-
-### 3 What we found
+### 3 What I found
 
 **`shell_cutoff` is the dominant knob; the producer cap is secondary.**
 At `shell_cutoff=-1` (every substrate must lie *strictly* closer to
