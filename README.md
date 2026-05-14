@@ -367,7 +367,7 @@ clean alternatives on their own branches.
   expansion seeded from that result. Cofactors fall into shell 0 by
   construction, so traceback never recurses on them. The change spans
   `synthesize.py`, `parser.py`, and the corpus loader.
-- **cofactor-suppression** (`claude/sleepy-hermann-aaa57e` branch) — keep the MetaCyc corpus; add composable `SubstrateFilter` callbacks to `traceback()` that suppress cofactor substrates at the reaction level. See §4.
+- **cofactor-suppression** (`claude/sleepy-hermann-aaa57e` branch) — this is owned and analyzed below by Cael Magner.
 
 ### 3.1 How the comparison was set up
 
