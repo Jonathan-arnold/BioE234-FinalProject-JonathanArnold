@@ -1,4 +1,4 @@
-# synthesis_helper
+## synthesis_helper
 
 A bottom-up retrobiosynthesis tool that builds a synthesis hypergraph from a
 reaction corpus (MetaCyc) and enumerates **cascades, pathways, and enzyme
@@ -6,8 +6,9 @@ compositions** for any reachable target chemical. The whole thing is wrapped
 as a [Model Context Protocol](https://modelcontextprotocol.io/) server so
 Claude Code can drive it as an interactive lab notebook.
 
-## 3. Cascade explosion: tuning vs. seeding
+# Final Project Report
 *Author: Jonathan Arnold*
+
 
 I analyze two approaches to managing cofactor cascade snowballs, using 
 a shell cutoff/max producer limit and using enzymemap data to create a 
@@ -27,7 +28,7 @@ clean alternatives on their own branches.
   `synthesize.py`, `parser.py`, and the corpus loader.
 - **cofactor-suppression** (`claude/sleepy-hermann-aaa57e` branch) — this is owned and analyzed below by Cael Magner.
 
-### 3.1 How the comparison was set up
+### 1 How the comparison was set up
 
 The two approaches use different corpora, so direct cascade-size
 comparison required a target set that exists in both.
@@ -50,7 +51,7 @@ comparison required a target set that exists in both.
    chemicals ranked by producer reactions in the cascade, and a
    substrate-branching histogram. JSON results land in `eval_results/`.
 
-### 3.2 Headline numbers
+### 2 Headline numbers
 
 Across the same 16 targets, sweeping `shell_cutoff` over `{-1, 0,
 none}` and `max_producers_per_chemical` over `{5, 10, 15}` on
@@ -75,7 +76,7 @@ Two structural observations jump out before any per-target analysis:
 shell-cutoff cap=5 row at unlimited cutoff has a mean comparable to
 enzymemap-shell0 but a wildly different distribution.
 
-### 3.3 What we found
+### 3 What we found
 
 **`shell_cutoff` is the dominant knob; the producer cap is secondary.**
 At `shell_cutoff=-1` (every substrate must lie *strictly* closer to
@@ -141,7 +142,7 @@ candidate count for each necessary chemical (`scripts/evaluate.py` on
 both branches; the same diagnostic lives in `scripts/debug_blowup.py`
 on shell-cutoff for one-off investigations).
 
-### 3.4 A representative target: epinephrine
+### 4 A representative target: epinephrine
 
 Both branches have epinephrine at target shell 4. The contrast in
 cascade *content* (not just size) is stark.
@@ -200,7 +201,7 @@ glycerol — chemicals with no direct biosynthetic relationship to
 epinephrine. Most of the 853 reactions are about how the cell builds
 sugars, not how it builds adrenaline.
 
-### 3.5 Trade-offs
+### 5 Trade-offs
 
 **shell-cutoff** preserves the original corpus and produces genuinely
 small cascades for non-cofactor targets — but only with a tight cap,
@@ -218,7 +219,7 @@ snowballs seem to occur anyway, pointing to deeper problems with traceback.
 Enzyme map wins between these two approaches. It successfully solves the 
 cofactor issue and produces computable cascades.
 
-### 3.6 Reproducing
+### 6 Reproducing
 
 ```bash
 git checkout shell-cutoff
@@ -231,7 +232,7 @@ python scripts/evaluate.py --use-matches       # eval_results/shell-cutoff_match
 python scripts/evaluate.py --use-matches --max-cutoff 0   # adds shell_cutoff -1 and 0 to the sweep
 ```
 
-### 3.7 Caveats
+### 7 Caveats
 
 The intersection (16 of 100 sampled, after dropping enzymemap shell-0
 hits) is small enough that secondary findings should be treated
@@ -242,11 +243,11 @@ cap≥10 plateau equals "most of the reachable hypergraph minus shell 0"
 once a cofactor is admitted; the numbers are real but should not be
 read as the inherent complexity of the individual targets.
 
-### 3.8 Contributions
+### 8 Contributions
 
 In addition to the cascade-explosion analysis above, my contributions
-to this project include the algorithmic core that section 1 wraps as
-MCP tools. Three modules on `main` form the pipeline from a reaction
+to this project include the algorithmic core of the code. Three modules 
+on `main` form the pipeline from a reaction
 corpus to fully enumerated pathways: BFS waveform expansion
 (`synthesis_helper/synthesize.py`) builds a hypergraph keyed by
 minimum shell distance from native metabolites; cascade traceback
@@ -255,13 +256,3 @@ target and collects every reaction that transitively produces it; and
 pathway enumeration (`synthesis_helper/pathways.py`) flattens the
 resulting cascade into individual linear routes via choice-function
 search over the producer tree.
-
-## Run the standalone pipeline
-
-If you just want the reachables file without going through MCP:
-
-```bash
-.venv/bin/python main.py
-```
-
-Writes `data/metacyc_L2_reachables.txt` (columns: id, name, inchi, shell).
