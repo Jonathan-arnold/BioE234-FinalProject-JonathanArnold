@@ -191,14 +191,24 @@ the cascade. `available` = candidate producers globally:
 The shell-cutoff cascade is recognizably the catecholamine
 biosynthesis pathway — l-dopa, dopamine, norepinephrine, tyramine —
 plus oxidative side-chemistry (h2o2, glutathione, dehydroascorbate)
-consistent with monoamine-oxidase / catechol-oxidation steps. The
-enzymemap-shell0 cascade for the *same* molecule is dominated by
+consistent with monoamine-oxidase / catechol-oxidation steps. 
+
+The enzymemap-shell0 cascade for the *same* molecule is dominated by
 central carbon metabolism — G3P, DHAP, fructose-6P, glucose-6P,
 glycerol — chemicals with no direct biosynthetic relationship to
 epinephrine. Most of the 853 reactions are about how the cell builds
 sugars, not how it builds adrenaline.
 
-### 5 Trade-offs
+This is the key finding for the enzymemap approach. The ecoli expansion
+should capture G3P and these other metabolites associated with central 
+metabolism. This tells us that the enzymemap dataset is insufficient for
+capturing all ubiquitous metabolites. Overall the approach succesfully
+eliminates many of the cofactor side branches that dominate cascades in
+the naive implementation which suggests that with a more expansive dataset
+or additional ideas for expanding coverage of shell 0 this approach would 
+likely perform very well.
+
+### 5 Trade-offs and Conclusion
 
 **shell-cutoff** preserves the original corpus and produces genuinely
 small cascades for non-cofactor targets — but only with a tight cap,
@@ -209,12 +219,11 @@ the structure of metabolism.
 **enzymemap-shell0** has a higher floor (no target costs less than
 ~850 reactions in this set, even ones that are biologically one step
 away from a native metabolite) but a far lower ceiling. The variance
-compresses dramatically and the pruning knobs become unnecessary. This
-does seem to solve the issue of cofactor related snowballs, but
-snowballs seem to occur anyway, pointing to deeper problems with traceback.
+compresses dramatically and the pruning knobs become unnecessary. 
 
-Enzyme map wins between these two approaches. It successfully solves the 
-cofactor issue and produces computable cascades.
+The conclusion of this analysis is that the enzymemap-shell0 approach
+is superior to a manual cutoff but that it requires additional data or
+methodology to fully resolve the motivating issue.
 
 ### 6 Reproducing
 
