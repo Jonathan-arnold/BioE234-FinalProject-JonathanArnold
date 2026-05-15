@@ -156,37 +156,37 @@ Cascade shape:
 | reactions by # non-shell-0 substrates | 0:37, 1:25, 2:3 | 0:56, 1:742, 2:55 |
 
 Top non-shell-0 necessary chemicals, ranked by producer reactions in
-the cascade. `available` = candidate producers globally:
+the cascade.
 
 **shell-cutoff (cutoff=0, cap=15)**
 
-| in_cascade | available | shell | name (id) |
-|---|---|---|---|
-| 15 | 229 | 1 | h2o2 (id=121) |
-| 12 | 20 | 1 | Reduced Glutathione (id=1770) |
-| 9 | 11 | 1 | l-dopa (id=8810) |
-| 7 | 7 | 2 | dopamine (id=26474) |
-| 5 | 8 | 1 | L-dehydro-ascorbate (id=5057) |
-| 4 | 5 | 1 | (id=37924) |
-| 3 | 3 | 1 | tyramine (id=3478) |
-| 3 | 3 | 3 | norepinephrine (id=30704) |
-| 3 | 3 | 4 | epinephrine (id=157085) |
-| 2 | 2 | 1 | dl-dopa (id=97751) |
+| producer reactions | shell | name (id) |
+|---|---|---|
+| 15 | 1 | h2o2 (id=121) |
+| 12 | 1 | Reduced Glutathione (id=1770) |
+| 9 | 1 | l-dopa (id=8810) |
+| 7 | 2 | dopamine (id=26474) |
+| 5 | 1 | L-dehydro-ascorbate (id=5057) |
+| 4 | 1 | (id=37924) |
+| 3 | 1 | tyramine (id=3478) |
+| 3 | 3 | norepinephrine (id=30704) |
+| 3 | 4 | epinephrine (id=157085) |
+| 2 | 1 | dl-dopa (id=97751) |
 
 **enzymemap-shell0**
 
-| in_cascade | available | shell | name (id) |
-|---|---|---|---|
-| 22 | 22 | 2 | D-Glyceraldehyde 3-phosphate (id=4265) |
-| 20 | 20 | 3 | Glycerone phosphate (id=4267) |
-| 18 | 18 | 6 | OC[C@H]1OC(O)(CO)[C@@H](O)[C@@H]1O (id=5683) |
-| 16 | 16 | 4 | glycerol (id=4297) |
-| 15 | 15 | 3 | D-fructose 6-phosphate (id=5783) |
-| 13 | 13 | 1 | beta-D-Glucose 1-phosphate (id=5768) |
-| 13 | 13 | 5 | D-fructose 6-phosphate (id=5790) |
-| 12 | 12 | 4 | D-fructose {r} (id=5678) |
-| 12 | 12 | 2 | D-Glucose 6-phosphate (id=5772) |
-| 11 | 11 | 1 | O=C(O)[C@H](O)CO (id=4221) |
+| producer reactions | shell | name (id) |
+|---|---|---|
+| 22 | 2 | D-Glyceraldehyde 3-phosphate (id=4265) |
+| 20 | 3 | Glycerone phosphate (id=4267) |
+| 18 | 6 | OC[C@H]1OC(O)(CO)[C@@H](O)[C@@H]1O (id=5683) |
+| 16 | 4 | glycerol (id=4297) |
+| 15 | 3 | D-fructose 6-phosphate (id=5783) |
+| 13 | 1 | beta-D-Glucose 1-phosphate (id=5768) |
+| 13 | 5 | D-fructose 6-phosphate (id=5790) |
+| 12 | 4 | D-fructose {r} (id=5678) |
+| 12 | 2 | D-Glucose 6-phosphate (id=5772) |
+| 11 | 1 | O=C(O)[C@H](O)CO (id=4221) |
 
 The shell-cutoff cascade is recognizably the catecholamine
 biosynthesis pathway — l-dopa, dopamine, norepinephrine, tyramine —
